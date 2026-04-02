@@ -125,6 +125,48 @@ function getAvailableModels(caps: RequestCapabilities): ModelRow[] {
   return rows;
 }
 
+function logGateway(
+  requestModel: string,
+  resolvedModel: string | null,
+  provider: string | null,
+  status: number,
+  latencyMs: number,
+  inputTokens: number,
+  outputTokens: number,
+  error: string | null,
+  userMessage: string | null,
+  assistantMessage: string | null
+) {
+  try {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO gateway_logs (request_model, resolved_model, provider, status, latency_ms, input_tokens, output_tokens, error, user_message, assistant_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      requestModel,
+      resolvedModel,
+      provider,
+      status,
+      latencyMs,
+      inputTokens,
+      outputTokens,
+      error,
+      userMessage?.slice(0, 500) ?? null,
+      assistantMessage?.slice(0, 500) ?? null
+    );
+  } catch {
+    // non-critical
+  }
+}
+
+function extractUserMessage(body: Record<string, unknown>): string | null {
+  const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
+  if (!messages || messages.length === 0) return null;
+  const last = messages[messages.length - 1];
+  if (typeof last.content === "string") return last.content.slice(0, 500);
+  return JSON.stringify(last.content).slice(0, 500);
+}
+
 function logCooldown(modelId: string, errorMsg: string) {
   try {
     const db = getDb();
@@ -328,6 +370,8 @@ export async function POST(req: NextRequest) {
 
     const MAX_RETRIES = 3;
     let lastError = "";
+    const startTime = Date.now();
+    const userMsg = extractUserMessage(body);
 
     for (let i = 0; i < Math.min(MAX_RETRIES, candidates.length); i++) {
       const candidate = candidates[i];
@@ -337,6 +381,9 @@ export async function POST(req: NextRequest) {
         const response = await forwardToProvider(provider, actualModelId, body, isStream);
 
         if (response.ok) {
+          const latency = Date.now() - startTime;
+          // Log success (tokens extracted from non-stream response later, use 0 for stream)
+          logGateway(modelField, actualModelId, provider, 200, latency, 0, 0, null, userMsg, null);
           return buildProxiedResponse(response, provider, actualModelId, isStream);
         }
 
@@ -352,8 +399,10 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // Non-retryable error (4xx except 429)
+        // Non-retryable error (4xx except 429/413)
         const errBody = await response.text();
+        const latency = Date.now() - startTime;
+        logGateway(modelField, actualModelId, provider, response.status, latency, 0, 0, errBody.slice(0, 300), userMsg, null);
         return NextResponse.json(
           { error: { message: errBody, type: "provider_error", code: response.status } },
           { status: response.status }
@@ -366,6 +415,8 @@ export async function POST(req: NextRequest) {
     }
 
     // All retries exhausted
+    const latency = Date.now() - startTime;
+    logGateway(modelField, null, null, 503, latency, 0, 0, lastError.slice(0, 300), userMsg, null);
     return NextResponse.json(
       {
         error: {

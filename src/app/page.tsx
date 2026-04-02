@@ -137,6 +137,20 @@ export default function Dashboard() {
   const [, setTick] = useState(0);
   const [showGuide, setShowGuide] = useState(false);
 
+  interface GatewayLog {
+    id: number;
+    requestModel: string;
+    resolvedModel: string | null;
+    provider: string | null;
+    status: number;
+    latencyMs: number;
+    error: string | null;
+    userMessage: string | null;
+    assistantMessage: string | null;
+    createdAt: string;
+  }
+  const [gatewayLogs, setGatewayLogs] = useState<GatewayLog[]>([]);
+
   // Scroll to top on mount
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -150,14 +164,16 @@ export default function Dashboard() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [s, m, l] = await Promise.all([
+      const [s, m, l, g] = await Promise.all([
         fetch("/api/status").then((r) => r.json()),
         fetch("/api/models").then((r) => r.json()),
         fetch("/api/leaderboard").then((r) => r.json()),
+        fetch("/api/gateway-logs").then((r) => r.json()).catch(() => []),
       ]);
       setStatusData(s);
       setModels(Array.isArray(m) ? m : []);
       setLeaderboard(Array.isArray(l) ? l : []);
+      setGatewayLogs(Array.isArray(g) ? g : []);
       setLastRefresh(new Date());
     } catch (err) {
       console.error("fetch error", err);
@@ -235,6 +251,7 @@ export default function Dashboard() {
               { id: "rankings",   label: "อันดับ" },
               { id: "all-models", label: "รายชื่อโมเดล" },
               { id: "chat",       label: "ทดลองแชท" },
+              { id: "gateway-logs", label: "Gateway Log" },
               { id: "logs",       label: "ประวัติระบบ" },
             ].map((link) => (
               <a
@@ -531,7 +548,74 @@ export default function Dashboard() {
           <ChatPanel availableModels={availableModels} />
         </section>
 
-        {/* ── Section 6: บันทึกการทำงาน ─────────────────────────────────── */}
+        {/* ── Section 6: Gateway Logs ──────────────────────────────────── */}
+        <section id="gateway-logs" className="animate-fade-in-up stagger-5">
+          <div className="flex items-center gap-3 mb-4">
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-purple-500/20 text-purple-400">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
+            </span>
+            <span className="font-bold text-white text-2xl">Gateway Log</span>
+            <span className="text-xs text-gray-500">{gatewayLogs.length} รายการล่าสุด</span>
+          </div>
+
+          <div className="glass rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+              {gatewayLogs.length === 0 ? (
+                <div className="px-4 py-8 text-center text-gray-600">ยังไม่มี request เข้า Gateway</div>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-gray-900/90 backdrop-blur">
+                    <tr className="border-b border-white/10 text-gray-500">
+                      <th className="px-3 py-2 text-left">เวลา</th>
+                      <th className="px-3 py-2 text-left">สถานะ</th>
+                      <th className="px-3 py-2 text-left">Request Model</th>
+                      <th className="px-3 py-2 text-left">Resolved</th>
+                      <th className="px-3 py-2 text-left">Provider</th>
+                      <th className="px-3 py-2 text-right">Latency</th>
+                      <th className="px-3 py-2 text-left">ข้อความ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {gatewayLogs.map((log) => {
+                      const dt = new Date(log.createdAt);
+                      const timeStr = dt.toLocaleString("th-TH", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+                      const isOk = log.status >= 200 && log.status < 300;
+                      return (
+                        <tr key={log.id} className="hover:bg-white/3">
+                          <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{timeStr}</td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-bold ${
+                              isOk ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"
+                            }`}>
+                              {isOk ? "✓" : "✗"} {log.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-indigo-300 font-mono">{log.requestModel}</td>
+                          <td className="px-3 py-2 text-gray-300 font-mono truncate max-w-[150px]">{log.resolvedModel ?? "—"}</td>
+                          <td className="px-3 py-2">
+                            {log.provider && <ProviderBadge provider={log.provider} />}
+                          </td>
+                          <td className="px-3 py-2 text-right text-gray-400">{fmtMs(log.latencyMs)}</td>
+                          <td className="px-3 py-2 text-gray-500 truncate max-w-[200px]">
+                            {log.error ? (
+                              <span className="text-red-400" title={log.error}>{log.error.slice(0, 80)}</span>
+                            ) : (
+                              <span title={log.userMessage ?? ""}>{log.userMessage?.slice(0, 60) ?? "—"}</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* ── Section 7: บันทึกการทำงาน ─────────────────────────────────── */}
         <section id="logs" className="animate-fade-in-up stagger-5">
           <div className="flex items-center gap-3 mb-4">
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-500/20 text-gray-400">

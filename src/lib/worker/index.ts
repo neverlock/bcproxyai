@@ -64,9 +64,12 @@ function cleanOldLogs(): void {
     const healthResult = db
       .prepare("DELETE FROM health_logs WHERE checked_at < datetime('now', '-30 days')")
       .run();
+    const gatewayResult = db
+      .prepare("DELETE FROM gateway_logs WHERE created_at < datetime('now', '-30 days')")
+      .run();
     logWorker(
       "cleanup",
-      `🧹 ลบ log เก่า: worker_logs ${workerResult.changes} แถว, health_logs ${healthResult.changes} แถว`
+      `🧹 ลบ log เก่า: worker ${workerResult.changes}, health ${healthResult.changes}, gateway ${gatewayResult.changes} แถว`
     );
   } catch (err) {
     logWorker("cleanup", `Log cleanup failed: ${err}`, "error");

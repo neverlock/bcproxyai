@@ -80,5 +80,23 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_health_checked ON health_logs(checked_at);
     CREATE INDEX IF NOT EXISTS idx_benchmark_model ON benchmark_results(model_id);
     CREATE INDEX IF NOT EXISTS idx_worker_logs_created ON worker_logs(created_at);
+
+    -- log gateway request/response
+    CREATE TABLE IF NOT EXISTS gateway_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_model TEXT NOT NULL,
+      resolved_model TEXT,
+      provider TEXT,
+      status INTEGER DEFAULT 0,
+      latency_ms INTEGER DEFAULT 0,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      error TEXT,
+      user_message TEXT,
+      assistant_message TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_gateway_logs_created ON gateway_logs(created_at);
   `);
 }
