@@ -21,6 +21,7 @@ import type {
 import { StatsCards } from "../components/StatsCards";
 import { ModelGrid } from "../components/ModelGrid";
 import { ChatPanel } from "../components/ChatPanel";
+import { GuideModal } from "../components/GuideModal";
 
 // ─── Gateway Config Card ───────────────────────────────────────────────────────
 
@@ -134,6 +135,7 @@ export default function Dashboard() {
   const [triggering, setTriggering] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [, setTick] = useState(0);
+  const [showGuide, setShowGuide] = useState(false);
 
   // Scroll to top on mount
   useEffect(() => {
@@ -243,11 +245,21 @@ export default function Dashboard() {
                 {link.label}
               </a>
             ))}
+            <button
+              onClick={() => setShowGuide(true)}
+              className="ml-2 px-3 py-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+              title="คู่มือการใช้งาน"
+            >
+              <svg className="h-4 w-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              </svg>
+              คู่มือ
+            </button>
             <a
               href="https://github.com/jaturapornchai/bcproxyai"
               target="_blank"
               rel="noopener noreferrer"
-              className="ml-2 p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+              className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
               title="GitHub"
             >
               <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
@@ -562,6 +574,9 @@ export default function Dashboard() {
         </footer>
 
       </div>
+
+      {/* ── Guide Modal ──────────────────────────────────────────────────── */}
+      {showGuide && <GuideModal onClose={() => setShowGuide(false)} />}
     </div>
   );
 }
