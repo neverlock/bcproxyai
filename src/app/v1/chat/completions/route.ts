@@ -346,6 +346,16 @@ async function forwardToProvider(
   }
 
   const requestBody: Record<string, unknown> = { ...body, model: actualModelId };
+
+  // Inject friendly Thai system prompt if no system message exists
+  const messages = requestBody.messages as Array<{ role: string; content: unknown }> | undefined;
+  if (messages && !messages.some(m => m.role === "system")) {
+    messages.unshift({
+      role: "system",
+      content: "คุณคือผู้ช่วย AI ที่เป็นมิตร ตอบเป็นภาษาไทยเสมอ พูดเหมือนเพื่อนคุยกัน สั้น กระชับ เข้าใจง่าย ไม่ต้องใช้คำทางการ ใช้อีโมจิได้บ้าง",
+    });
+  }
+
   // Ollama: set large context window via options.num_ctx
   if (provider === "ollama") {
     requestBody.options = { ...(requestBody.options as Record<string, unknown> ?? {}), num_ctx: 65536 };
@@ -498,17 +508,10 @@ export async function POST(req: NextRequest) {
     const userMsg = extractUserMessage(body);
     const triedProviders = new Set<string>();
 
-    // Ollama (local) ALWAYS first
-    // Ollama: sort by latency (smaller/faster models first)
-    const ollamaCandidates = finalCandidates
-      .filter(c => c.provider === "ollama")
-      .sort((a, b) => (a.avg_latency ?? 9999999) - (b.avg_latency ?? 9999999));
-    const cloudCandidates = finalCandidates.filter(c => c.provider !== "ollama");
-
-    // Spread cloud candidates across providers by weight
-    const spreadCandidates: typeof finalCandidates = [...ollamaCandidates]; // Ollama first!
+    // Weighted Load Balancing — all providers equal (including Ollama)
+    const spreadCandidates: typeof finalCandidates = [];
     const byProvider: Record<string, typeof finalCandidates> = {};
-    for (const c of cloudCandidates) {
+    for (const c of finalCandidates) {
       (byProvider[c.provider] ??= []).push(c);
     }
     const providerOrder = Object.entries(byProvider)
@@ -521,7 +524,7 @@ export async function POST(req: NextRequest) {
     // Round-robin across weighted providers
     let hasMore = true;
     let round = 0;
-    const totalExpected = ollamaCandidates.length + cloudCandidates.length;
+    const totalExpected = finalCandidates.length;
     while (hasMore && spreadCandidates.length < totalExpected) {
       hasMore = false;
       for (const { models: provModels } of providerOrder) {
@@ -544,13 +547,29 @@ export async function POST(req: NextRequest) {
 
         if (response.ok) {
           const latency = Date.now() - startTime;
-          logGateway(modelField, actualModelId, provider, 200, latency, 0, 0, null, userMsg, null);
-          // Model ทำงานได้ → clear cooldown ให้กลับมาใช้ได้ทันที
+          // Model ทำงานได้ → clear cooldown
           try {
             const db = getDb();
             db.prepare("DELETE FROM health_logs WHERE model_id = ? AND cooldown_until > datetime('now')").run(dbModelId);
           } catch { /* silent */ }
-          return buildProxiedResponse(response, provider, actualModelId, isStream, estInputTokens);
+          const proxied = await buildProxiedResponse(response, provider, actualModelId, isStream, estInputTokens);
+          // Log with assistant response (extract from non-stream)
+          if (!isStream) {
+            try {
+              const cloned = proxied.clone();
+              const json = await cloned.json();
+              const assistantContent = json.choices?.[0]?.message?.content?.slice(0, 500) ?? null;
+              const usage = json.usage;
+              logGateway(modelField, actualModelId, provider, 200, latency,
+                usage?.prompt_tokens ?? 0, usage?.completion_tokens ?? 0,
+                null, userMsg, assistantContent);
+            } catch {
+              logGateway(modelField, actualModelId, provider, 200, latency, 0, 0, null, userMsg, null);
+            }
+          } else {
+            logGateway(modelField, actualModelId, provider, 200, latency, 0, 0, null, userMsg, "[stream]");
+          }
+          return proxied;
         }
 
         // Non-200: cooldown for cloud providers only (Ollama = local, never cooldown)

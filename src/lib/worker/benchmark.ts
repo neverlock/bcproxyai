@@ -76,7 +76,7 @@ export async function askModel(
       body: JSON.stringify({
         model: modelId,
         messages: [{ role: "user", content: question }],
-        max_tokens: 300,
+        max_tokens: 150,
       }),
       signal: AbortSignal.timeout(30000),
     });
@@ -234,7 +234,7 @@ export async function runBenchmarks(): Promise<{
   let testedModels = 0;
 
   // Parallel benchmark — 5 models at a time
-  const CONCURRENCY = 5;
+  const CONCURRENCY = 10;
   let idx = 0;
   async function benchmarkWorker() {
     while (idx < models.length) {
