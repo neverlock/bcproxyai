@@ -662,6 +662,29 @@ async function buildProxiedResponse(
       }
     }
 
+    // Fix tool call parameters: some models send numbers as strings
+    if (json.choices) {
+      for (const choice of json.choices) {
+        const toolCalls = choice.message?.tool_calls;
+        if (Array.isArray(toolCalls)) {
+          for (const tc of toolCalls) {
+            if (tc.function?.arguments && typeof tc.function.arguments === "string") {
+              try {
+                const args = JSON.parse(tc.function.arguments);
+                // Auto-fix: convert string numbers to actual numbers
+                for (const [key, val] of Object.entries(args)) {
+                  if (typeof val === "string" && /^\d+$/.test(val)) {
+                    args[key] = Number(val);
+                  }
+                }
+                tc.function.arguments = JSON.stringify(args);
+              } catch { /* keep original */ }
+            }
+          }
+        }
+      }
+    }
+
     // Track token usage
     const usage = json.usage;
     if (usage) {
