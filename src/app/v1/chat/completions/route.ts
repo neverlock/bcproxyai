@@ -601,13 +601,13 @@ export async function POST(req: NextRequest) {
   }
 }
 
-function buildProxiedResponse(
+async function buildProxiedResponse(
   upstream: Response,
   provider: string,
   modelId: string,
   stream: boolean,
   estimatedInputTokens = 0
-): Response {
+): Promise<Response> {
   const headers = new Headers();
   headers.set("Content-Type", upstream.headers.get("Content-Type") || "application/json");
   headers.set("X-BCProxy-Provider", provider);
@@ -640,52 +640,42 @@ function buildProxiedResponse(
     });
   }
 
-  // Non-streaming: clone body, extract usage, then return
-  let bodyForUser: ReadableStream | null = null;
-  let bodyForTracking: ReadableStream | null = null;
+  // Non-streaming: read body, fix reasoning→content, track tokens, return
   try {
-    if (upstream.body && !upstream.bodyUsed) {
-      const cloned = upstream.clone();
-      bodyForUser = upstream.body;
-      bodyForTracking = cloned.body;
-    }
-  } catch {
-    // Body already consumed — just pass through
-    bodyForUser = upstream.body;
-  }
+    const text = await upstream.text();
+    const json = JSON.parse(text);
 
-  // Fire-and-forget: read clone to extract token usage
-  if (bodyForTracking) {
-    const trackingReader = bodyForTracking.getReader();
-    const chunks: Uint8Array[] = [];
-    (async () => {
-      try {
-        let done = false;
-        while (!done) {
-          const result = await trackingReader.read();
-          done = result.done;
-          if (result.value) chunks.push(result.value);
+    // Fix: some models (Ollama/gemma4) put answer in reasoning field instead of content
+    if (json.choices) {
+      for (const choice of json.choices) {
+        const msg = choice.message;
+        if (msg && (!msg.content || msg.content === "") && msg.reasoning) {
+          // Extract actual answer from reasoning (last meaningful line)
+          msg.content = msg.reasoning;
         }
-        const text = new TextDecoder().decode(Buffer.concat(chunks));
-        const json = JSON.parse(text);
-        const usage = json.usage;
-        if (usage) {
-          trackTokenUsage(provider, modelId, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0);
-        } else {
-          // Fallback: estimate from response size
-          const estOutput = Math.ceil(text.length / 3);
-          trackTokenUsage(provider, modelId, estimatedInputTokens, estOutput);
-        }
-      } catch {
-        // non-critical
       }
-    })();
-  }
+    }
 
-  return new Response(bodyForUser, {
-    status: upstream.status,
-    headers,
-  });
+    // Track token usage
+    const usage = json.usage;
+    if (usage) {
+      trackTokenUsage(provider, modelId, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0);
+    } else {
+      const estOutput = Math.ceil(text.length / 3);
+      trackTokenUsage(provider, modelId, estimatedInputTokens, estOutput);
+    }
+
+    return new Response(JSON.stringify(json), {
+      status: upstream.status,
+      headers,
+    });
+  } catch {
+    // Fallback: pass through raw body
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers,
+    });
+  }
 }
 
 // Handle OPTIONS for CORS preflight
