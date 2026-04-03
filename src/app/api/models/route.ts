@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db/schema";
+import { getCached, setCache } from "@/lib/cache";
 
 export const dynamic = "force-dynamic";
 
@@ -7,6 +8,10 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const provider = searchParams.get("provider");
+
+    const cacheKey = `api:models:${provider ?? "all"}`;
+    const cached = getCached<unknown[]>(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     const db = getDb();
 
@@ -121,6 +126,7 @@ export async function GET(req: NextRequest) {
       };
     });
 
+    setCache(cacheKey, result, 5000); // cache 5 seconds
     return NextResponse.json(result);
   } catch (err) {
     console.error("[models] error:", err);

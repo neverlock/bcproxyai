@@ -257,7 +257,7 @@ export default function Dashboard() {
   const fetchGatewayLogs = useCallback(async () => {
     try {
       const g = await fetch("/api/gateway-logs").then((r) => r.json());
-      setGatewayLogs(Array.isArray(g) ? g : []);
+      setGatewayLogs(Array.isArray(g) ? g : Array.isArray(g.logs) ? g.logs : []);
     } catch { /* silent */ }
   }, []);
 

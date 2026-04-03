@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db/schema";
+import { getCached, setCache } from "@/lib/cache";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    const cached = getCached<object>("api:status");
+    if (cached) return NextResponse.json(cached);
+
     const db = getDb();
 
     // Worker state
@@ -103,7 +107,7 @@ export async function GET() {
       ORDER BY last_seen DESC
     `).all();
 
-    return NextResponse.json({
+    const result = {
       worker: {
         status: workerStatus,
         lastRun,
@@ -122,7 +126,9 @@ export async function GET() {
         warning: warningModels,
       },
       recentLogs,
-    });
+    };
+    setCache("api:status", result, 5000); // cache 5 seconds
+    return NextResponse.json(result);
   } catch (err) {
     console.error("[status] error:", err);
     return NextResponse.json(

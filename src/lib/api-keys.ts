@@ -12,7 +12,19 @@ const ENV_MAP: Record<string, string> = {
   mistral: "MISTRAL_API_KEY",
 };
 
+// Clean expired entries every 100 calls
+let callCount = 0;
+function cleanExpired() {
+  callCount++;
+  if (callCount % 100 !== 0) return;
+  const now = Date.now();
+  for (const [key, until] of cooldownMap.entries()) {
+    if (until < now) cooldownMap.delete(key);
+  }
+}
+
 export function getNextApiKey(provider: string): string {
+  cleanExpired();
   const envVar = ENV_MAP[provider];
   if (!envVar) return "";
 

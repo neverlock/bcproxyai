@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db/schema";
+import { getCached, setCache } from "@/lib/cache";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    const cached = getCached<unknown[]>("api:leaderboard");
+    if (cached) return NextResponse.json(cached);
+
     const db = getDb();
 
     const rows = db
@@ -52,6 +56,7 @@ export async function GET() {
       tier: r.tier,
     }));
 
+    setCache("api:leaderboard", result, 5000); // cache 5 seconds
     return NextResponse.json(result);
   } catch (err) {
     console.error("[leaderboard] error:", err);

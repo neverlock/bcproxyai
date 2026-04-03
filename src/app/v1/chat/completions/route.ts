@@ -1,19 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db/schema";
 import { getNextApiKey, markKeyCooldown } from "@/lib/api-keys";
+import { PROVIDER_URLS } from "@/lib/providers";
+import { getCached, setCache, clearCache } from "@/lib/cache";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-// Provider base URLs
-const PROVIDER_URLS: Record<string, string> = {
-  openrouter: "https://openrouter.ai/api/v1/chat/completions",
-  kilo: "https://api.kilo.ai/api/gateway/chat/completions",
-  groq: "https://api.groq.com/openai/v1/chat/completions",
-  cerebras: "https://api.cerebras.ai/v1/chat/completions",
-  sambanova: "https://api.sambanova.ai/v1/chat/completions",
-  mistral: "https://api.mistral.ai/v1/chat/completions",
-};
 
 // Budget check: returns { ok, percentUsed } — blocks at 95%
 function checkBudget(): { ok: boolean; preferCheap: boolean; percentUsed: number } {
@@ -103,6 +95,10 @@ function estimateTokens(body: Record<string, unknown>): number {
 }
 
 function getAvailableModels(caps: RequestCapabilities, minContext = 0): ModelRow[] {
+  const cacheKey = `models:${caps.hasTools}:${caps.hasImages}:${caps.needsJsonSchema}:${minContext}`;
+  const cached = getCached<ModelRow[]>(cacheKey);
+  if (cached) return cached;
+
   const db = getDb();
   const now = new Date().toISOString();
 
@@ -157,6 +153,7 @@ function getAvailableModels(caps: RequestCapabilities, minContext = 0): ModelRow
     )
     .all(now) as ModelRow[];
 
+  setCache(cacheKey, rows, 10000); // cache 10 seconds
   return rows;
 }
 
@@ -225,6 +222,9 @@ function logCooldown(modelId: string, errorMsg: string, httpStatus = 0) {
       `INSERT INTO health_logs (model_id, status, error, cooldown_until, checked_at)
        VALUES (?, 'rate_limited', ?, ?, datetime('now'))`
     ).run(modelId, errorMsg, cooldownUntil);
+    // Clear model cache so next request gets fresh data
+    clearCache("models:");
+    clearCache("allmodels:");
   } catch {
     // non-critical
   }
@@ -253,13 +253,17 @@ function parseModelField(model: string): {
 
 // Last resort: get ALL models including cooldown ones — better than 503
 function getAllModelsIncludingCooldown(caps: RequestCapabilities): ModelRow[] {
+  const cacheKey = `allmodels:${caps.hasTools}:${caps.hasImages}`;
+  const cached = getCached<ModelRow[]>(cacheKey);
+  if (cached) return cached;
+
   const db = getDb();
   const filters: string[] = ["m.context_length >= 32000"];
   if (caps.hasTools) filters.push("m.supports_tools = 1");
   if (caps.hasImages) filters.push("m.supports_vision = 1");
   const whereClause = filters.join(" AND ");
 
-  return db.prepare(`
+  const result = db.prepare(`
     SELECT m.id, m.provider, m.model_id, m.supports_tools, m.supports_vision, m.tier, m.context_length,
       COALESCE(b.avg_score, 0) as avg_score, COALESCE(b.avg_latency, 9999999) as avg_latency
     FROM models m
@@ -268,6 +272,9 @@ function getAllModelsIncludingCooldown(caps: RequestCapabilities): ModelRow[] {
     ORDER BY RANDOM()
     LIMIT 20
   `).all() as ModelRow[];
+
+  setCache(cacheKey, result, 10000); // cache 10 seconds
+  return result;
 }
 
 function selectModelsByMode(
@@ -379,6 +386,21 @@ function isRetryableStatus(status: number): boolean {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as Record<string, unknown>;
+
+    // Validate request body
+    if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+      return NextResponse.json(
+        { error: { message: "messages is required and must be a non-empty array", type: "invalid_request_error" } },
+        { status: 400 }
+      );
+    }
+    if (typeof body.model !== "string" && body.model !== undefined) {
+      return NextResponse.json(
+        { error: { message: "model must be a string", type: "invalid_request_error" } },
+        { status: 400 }
+      );
+    }
+
     const modelField = (body.model as string) || "auto";
     const isStream = body.stream === true;
     const caps = detectRequestCapabilities(body);

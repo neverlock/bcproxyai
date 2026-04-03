@@ -1,16 +1,6 @@
 import { getDb } from "@/lib/db/schema";
 import { getNextApiKey } from "@/lib/api-keys";
-
-const PROVIDER_URLS: Record<string, string> = {
-  openrouter: "https://openrouter.ai/api/v1/chat/completions",
-  kilo: "https://api.kilo.ai/api/gateway/chat/completions",
-  google:
-    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-  groq: "https://api.groq.com/openai/v1/chat/completions",
-  cerebras: "https://api.cerebras.ai/v1/chat/completions",
-  sambanova: "https://api.sambanova.ai/v1/chat/completions",
-  mistral: "https://api.mistral.ai/v1/chat/completions",
-};
+import { PROVIDER_URLS } from "@/lib/providers";
 
 const NON_CHAT_KEYWORDS = [
   "whisper",
