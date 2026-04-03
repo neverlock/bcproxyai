@@ -59,13 +59,15 @@ export async function pingModel(
     max_tokens: 5,
   });
 
+  // Ollama (local) ต้อง timeout นานกว่า cloud เพราะ model ใหญ่ load ช้า
+  const timeoutMs = model.provider === "ollama" ? 120000 : 15000;
   const start = Date.now();
   try {
     const res = await fetch(url, {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const latency = Date.now() - start;
 
