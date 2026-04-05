@@ -18,6 +18,10 @@ body {
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }
 
+/* ── Scroll offset for sticky nav ──────────────────────────── */
+html { scroll-padding-top: 6rem; }
+section[id] { scroll-margin-top: 6rem; }
+
 /* ── Scrollbar ──────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: #0f172a; }
