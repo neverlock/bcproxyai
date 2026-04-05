@@ -8,6 +8,10 @@ export const PROVIDER_URLS: Record<string, string> = {
   sambanova: "https://api.sambanova.ai/v1/chat/completions",
   mistral: "https://api.mistral.ai/v1/chat/completions",
   ollama: `${process.env.OLLAMA_BASE_URL || "http://localhost:11434"}/v1/chat/completions`,
+  github: "https://models.github.ai/inference/chat/completions",
+  fireworks: "https://api.fireworks.ai/inference/v1/chat/completions",
+  cohere: "https://api.cohere.com/v2/chat/completions",
+  cloudflare: `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID || ""}/ai/v1/chat/completions`,
 };
 
 // Embedding endpoints (providers that support embeddings)
@@ -33,4 +37,8 @@ export const PROVIDER_LABELS: Record<string, string> = {
   sambanova: "SN",
   mistral: "Mistral",
   ollama: "Local",
+  github: "GitHub",
+  fireworks: "FW",
+  cohere: "Cohere",
+  cloudflare: "CF",
 };

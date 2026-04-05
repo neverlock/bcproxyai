@@ -100,6 +100,10 @@ export const PROVIDER_COLORS: Record<string, { text: string; bg: string; border:
   sambanova:  { text: "text-teal-300", bg: "bg-teal-500/20", border: "border-teal-500/40", glow: "rgba(20,184,166,0.5)" },
   mistral:    { text: "text-sky-300", bg: "bg-sky-500/20", border: "border-sky-500/40", glow: "rgba(56,189,248,0.5)" },
   ollama:     { text: "text-lime-300", bg: "bg-lime-500/20", border: "border-lime-500/40", glow: "rgba(132,204,22,0.5)" },
+  github:     { text: "text-gray-100", bg: "bg-gray-500/20", border: "border-gray-400/40", glow: "rgba(156,163,175,0.5)" },
+  fireworks:  { text: "text-red-300", bg: "bg-red-500/20", border: "border-red-500/40", glow: "rgba(239,68,68,0.5)" },
+  cohere:     { text: "text-pink-300", bg: "bg-pink-500/20", border: "border-pink-500/40", glow: "rgba(236,72,153,0.5)" },
+  cloudflare: { text: "text-amber-200", bg: "bg-amber-500/20", border: "border-amber-500/40", glow: "rgba(245,158,11,0.5)" },
 };
 
 export const TIER_LABELS: Record<string, string> = { large: "L", medium: "M", small: "S" };

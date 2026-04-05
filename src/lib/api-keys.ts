@@ -11,6 +11,10 @@ const ENV_MAP: Record<string, string> = {
   sambanova: "SAMBANOVA_API_KEY",
   mistral: "MISTRAL_API_KEY",
   ollama: "OLLAMA_API_KEY",
+  github: "GITHUB_MODELS_TOKEN",
+  fireworks: "FIREWORKS_API_KEY",
+  cohere: "COHERE_API_KEY",
+  cloudflare: "CLOUDFLARE_API_TOKEN",
 };
 
 // Clean expired entries every 100 calls

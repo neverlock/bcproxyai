@@ -333,6 +333,147 @@ async function fetchOllamaModels(): Promise<ModelRow[]> {
   }
 }
 
+async function fetchGitHubModels(): Promise<ModelRow[]> {
+  const token = getNextApiKey("github");
+  if (!token) return [];
+  try {
+    const res = await fetch("https://models.github.ai/inference/models", {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const models: ModelRow[] = [];
+    for (const m of json.data ?? json ?? []) {
+      const mid: string = m.id ?? m.name ?? "";
+      if (!mid) continue;
+      if (NON_CHAT_KEYWORDS.some((kw) => mid.toLowerCase().includes(kw))) continue;
+      const ctx = m.context_length ?? m.context_window ?? m.max_tokens ?? 128000;
+      models.push({
+        id: `github:${mid}`,
+        name: m.friendly_name ?? m.name ?? mid,
+        provider: "github",
+        model_id: mid,
+        context_length: ctx,
+        tier: calcTier(ctx),
+        description: m.summary ?? undefined,
+        supports_vision: detectVision(mid, m.name ?? ""),
+        supports_tools: detectTools(mid, m.name ?? ""),
+      });
+    }
+    return models;
+  } catch (err) {
+    logWorker("scan", `GitHub Models fetch error: ${err}`, "error");
+    return [];
+  }
+}
+
+async function fetchFireworksModels(): Promise<ModelRow[]> {
+  const apiKey = getNextApiKey("fireworks");
+  if (!apiKey) return [];
+  try {
+    const res = await fetch("https://api.fireworks.ai/inference/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const models: ModelRow[] = [];
+    for (const m of json.data ?? []) {
+      const mid: string = m.id ?? "";
+      if (!mid) continue;
+      if (NON_CHAT_KEYWORDS.some((kw) => mid.toLowerCase().includes(kw))) continue;
+      const ctx = m.context_length ?? m.context_window ?? 0;
+      models.push({
+        id: `fireworks:${mid}`,
+        name: m.id,
+        provider: "fireworks",
+        model_id: mid,
+        context_length: ctx,
+        tier: calcTier(ctx),
+        description: undefined,
+        supports_vision: detectVision(mid, m.id ?? ""),
+        supports_tools: detectTools(mid, m.id ?? ""),
+      });
+    }
+    return models;
+  } catch (err) {
+    logWorker("scan", `Fireworks fetch error: ${err}`, "error");
+    return [];
+  }
+}
+
+async function fetchCohereModels(): Promise<ModelRow[]> {
+  const apiKey = getNextApiKey("cohere");
+  if (!apiKey) return [];
+  try {
+    const res = await fetch("https://api.cohere.com/v2/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const models: ModelRow[] = [];
+    for (const m of json.models ?? json.data ?? []) {
+      const mid: string = m.name ?? m.id ?? "";
+      if (!mid) continue;
+      // Only chat-capable models
+      if (m.endpoints && !m.endpoints.includes("chat")) continue;
+      const ctx = m.context_length ?? m.max_tokens ?? 128000;
+      models.push({
+        id: `cohere:${mid}`,
+        name: m.name ?? mid,
+        provider: "cohere",
+        model_id: mid,
+        context_length: ctx,
+        tier: calcTier(ctx),
+        description: undefined,
+        supports_vision: detectVision(mid, m.name ?? ""),
+        supports_tools: m.endpoints?.includes("tool_use") ? 1 : detectTools(mid, m.name ?? ""),
+      });
+    }
+    return models;
+  } catch (err) {
+    logWorker("scan", `Cohere fetch error: ${err}`, "error");
+    return [];
+  }
+}
+
+async function fetchCloudflareModels(): Promise<ModelRow[]> {
+  const token = getNextApiKey("cloudflare");
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (!token || !accountId) return [];
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/models/search?task=Text Generation`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const models: ModelRow[] = [];
+    for (const m of json.result ?? []) {
+      const mid: string = m.name ?? "";
+      if (!mid) continue;
+      const ctx = m.properties?.max_input_tokens ?? 32000;
+      models.push({
+        id: `cloudflare:${mid}`,
+        name: m.name ?? mid,
+        provider: "cloudflare",
+        model_id: mid,
+        context_length: ctx,
+        tier: calcTier(ctx),
+        description: m.description ?? undefined,
+        supports_vision: detectVision(mid, m.name ?? ""),
+        supports_tools: detectTools(mid, m.name ?? ""),
+      });
+    }
+    return models;
+  } catch (err) {
+    logWorker("scan", `Cloudflare fetch error: ${err}`, "error");
+    return [];
+  }
+}
+
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? "";
 
 export async function generateNickname(modelName: string, provider: string, existingNames: string[], scoreInfo = ""): Promise<string | null> {
@@ -373,7 +514,7 @@ export async function scanModels(): Promise<{ found: number; new: number; disapp
   logWorker("scan", "Starting model scan");
   const db = getDb();
 
-  const [orModels, kiloModels, googleModels, groqModels, cerebrasModels, sambaNovaModels, mistralModels, ollamaModels] = await Promise.all([
+  const [orModels, kiloModels, googleModels, groqModels, cerebrasModels, sambaNovaModels, mistralModels, ollamaModels, githubModels, fireworksModels, cohereModels, cloudflareModels] = await Promise.all([
     fetchOpenRouterModels(),
     fetchKiloModels(),
     fetchGoogleModels(),
@@ -382,9 +523,13 @@ export async function scanModels(): Promise<{ found: number; new: number; disapp
     fetchSambaNovaModels(),
     fetchMistralModels(),
     fetchOllamaModels(),
+    fetchGitHubModels(),
+    fetchFireworksModels(),
+    fetchCohereModels(),
+    fetchCloudflareModels(),
   ]);
 
-  const allModels = [...orModels, ...kiloModels, ...googleModels, ...groqModels, ...cerebrasModels, ...sambaNovaModels, ...mistralModels, ...ollamaModels];
+  const allModels = [...orModels, ...kiloModels, ...googleModels, ...groqModels, ...cerebrasModels, ...sambaNovaModels, ...mistralModels, ...ollamaModels, ...githubModels, ...fireworksModels, ...cohereModels, ...cloudflareModels];
   const foundIds = new Set(allModels.map(m => m.id));
   let newCount = 0;
 

@@ -1,6 +1,6 @@
 # BCProxyAI — Smart AI Gateway
 
-Gateway อัจฉริยะที่รวม AI ฟรีจาก **8 ผู้ให้บริการ** กว่า **130+ โมเดล** ไว้ในที่เดียว
+Gateway อัจฉริยะที่รวม AI ฟรีจาก **12 ผู้ให้บริการ** กว่า **200+ โมเดล** ไว้ในที่เดียว
 ใช้งานผ่าน **OpenAI-compatible API** — เปลี่ยน base URL แล้วใช้ได้เลย ไม่ต้องแก้โค้ด
 
 ---
@@ -83,10 +83,10 @@ BCProxyAI เป็น **100% OpenAI-compatible API** — ใช้แทน Ope
 | POST | `/v1/moderations` | Content moderation (always passes) | ✅ |
 | GET | `/v1/models` | List all models | ✅ |
 | GET | `/v1/models/{model_id}` | Retrieve a model | ✅ |
-| POST | `/v1/audio/speech` | Text-to-speech | 🚫 501 |
-| POST | `/v1/audio/transcriptions` | Speech-to-text | 🚫 501 |
-| POST | `/v1/audio/translations` | Audio translation | 🚫 501 |
-| POST | `/v1/images/generations` | Image generation | 🚫 501 |
+| POST | `/v1/audio/speech` | TTS (Groq Orpheus, 100 req/day) | ✅ |
+| POST | `/v1/audio/transcriptions` | STT (Groq Whisper, 2K req/day) | ✅ |
+| POST | `/v1/audio/translations` | Audio translate (Groq Whisper) | ✅ |
+| POST | `/v1/images/generations` | Image gen (Pollinations.ai, free) | ✅ |
 
 ### Response Format
 
@@ -188,11 +188,15 @@ curl http://localhost:3333/v1/chat/completions \
 | 1 | **OpenRouter** | Cloud ฟรี | โมเดลฟรีมากที่สุด | สมัครฟรี |
 | 2 | **Kilo AI** | Cloud ฟรี | ไม่ต้องใช้ key | ไม่ต้อง |
 | 3 | **Google AI Studio** | Cloud ฟรี | Gemini models | สมัครฟรี |
-| 4 | **Groq** | Cloud ฟรี | เร็วที่สุด | สมัครฟรี |
+| 4 | **Groq** | Cloud ฟรี | เร็วที่สุด + TTS/STT | สมัครฟรี |
 | 5 | **Cerebras** | Cloud ฟรี | เร็ว | สมัครฟรี |
 | 6 | **SambaNova** | Cloud ฟรี | Llama 405B | สมัครฟรี |
 | 7 | **Mistral** | Cloud ฟรี | 1B tokens/เดือน | สมัครฟรี |
 | 8 | **Ollama** | LOCAL | รันบนเครื่องตัวเอง | ไม่ต้อง |
+| 9 | **GitHub Models** | Cloud ฟรี | GPT-4o, DeepSeek-R1 (ใช้ GitHub token) | GitHub PAT |
+| 10 | **Fireworks AI** | Cloud ฟรี | 50+ models, 10 RPM ฟรี | สมัครฟรี |
+| 11 | **Cohere** | Cloud ฟรี | Command R+, 1K calls/เดือน | สมัครฟรี |
+| 12 | **Cloudflare** | Cloud ฟรี | 10K neurons/วัน, Llama/DeepSeek | สมัครฟรี |
 
 > **Ollama** รันบนเครื่องคุณเอง ไม่ส่งข้อมูลออกนอก
 > BCProxyAI ลงทะเบียน Ollama model ด้วย 128K context, ส่ง `num_ctx=65536`
@@ -249,13 +253,18 @@ cp .env.example .env.local
 OPENROUTER_API_KEY=sk-or-v1-xxxx
 GROQ_API_KEY=gsk_xxxx
 
-# ไม่บังคับ
+# ไม่บังคับ (ยิ่งใส่มาก ยิ่งมี model เยอะ)
 KILO_API_KEY=
 GOOGLE_AI_API_KEY=
 CEREBRAS_API_KEY=
 SAMBANOVA_API_KEY=
 MISTRAL_API_KEY=
 DEEPSEEK_API_KEY=
+GITHUB_MODELS_TOKEN=ghp_xxxx
+FIREWORKS_API_KEY=
+COHERE_API_KEY=
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
@@ -290,6 +299,10 @@ npm ci && npm run build && npm start    # เปิดที่ http://localhost
 | **SambaNova** | https://cloud.sambanova.ai | ไม่บังคับ |
 | **Mistral** | https://console.mistral.ai | ไม่บังคับ |
 | **Ollama** | https://ollama.com | ไม่บังคับ |
+| **GitHub Models** | https://github.com/settings/tokens | ไม่บังคับ (scope: `models:read`) |
+| **Fireworks AI** | https://fireworks.ai/account/api-keys | ไม่บังคับ |
+| **Cohere** | https://dashboard.cohere.com/api-keys | ไม่บังคับ |
+| **Cloudflare** | https://dash.cloudflare.com/profile/api-tokens | ไม่บังคับ (+ Account ID) |
 
 ### Auto API Key Rotation
 
@@ -963,4 +976,4 @@ docker compose up -d
 ---
 
 **BCProxyAI** — Smart AI Gateway
-**8 Providers** | **130+ Free Models** | **OpenAI-compatible API** | **Local LLM** | **Auto-Fallback** | **Consensus** | **Vision & Tools** | **Smart Routing** | **Slow Response Cooldown** | **Thai Benchmark** | **Fun Nicknames**
+**12 Providers** | **200+ Free Models** | **Full OpenAI API** | **TTS/STT/Images** | **Local LLM** | **Auto-Fallback** | **Consensus** | **Vision & Tools** | **Smart Routing** | **Thai Benchmark** | **Fun Nicknames**
