@@ -25,6 +25,7 @@ import { GuideModal } from "../components/GuideModal";
 import { SpeedRace } from "../components/SpeedRace";
 import { Analytics } from "../components/Analytics";
 import type { AnalyticsData } from "../components/Analytics";
+import { ComplaintPanel } from "../components/ComplaintPanel";
 
 // ─── Gateway Config Card ───────────────────────────────────────────────────────
 
@@ -350,6 +351,7 @@ export default function Dashboard() {
               { id: "analytics",  label: "สถิติ" },
               { id: "all-models", label: "รายชื่อโมเดล" },
               { id: "chat",       label: "ทดลองแชท" },
+              { id: "complaints",  label: "ร้องเรียน" },
               { id: "gateway-logs", label: "Gateway Log" },
               { id: "logs",       label: "ประวัติระบบ" },
             ].map((link) => (
@@ -713,6 +715,20 @@ export default function Dashboard() {
             <h2 className="text-2xl font-bold text-white">แชทกับโมเดล</h2>
           </div>
           <ChatPanel availableModels={availableModels} />
+        </section>
+
+        {/* ── Section: Complaint System ─────────────────────────────────── */}
+        <section id="complaints" className="animate-fade-in-up stagger-5">
+          <div className="flex items-center gap-3 mb-4">
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/20 text-red-400">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+            </span>
+            <span className="font-bold text-white text-2xl">ระบบร้องเรียน</span>
+            <span className="text-xs text-gray-400 ml-1">Complaint System</span>
+          </div>
+          <ComplaintPanel />
         </section>
 
         {/* ── Section 6: Gateway Logs ──────────────────────────────────── */}

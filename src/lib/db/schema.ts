@@ -118,5 +118,40 @@ function initSchema(db: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(created_at);
+
+    -- ใบร้องเรียน (complaint) จาก AI/คน
+    CREATE TABLE IF NOT EXISTS complaints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      reason TEXT,
+      user_message TEXT,
+      assistant_message TEXT,
+      source TEXT DEFAULT 'api',
+      status TEXT DEFAULT 'pending',
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (model_id) REFERENCES models(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_complaints_model ON complaints(model_id);
+    CREATE INDEX IF NOT EXISTS idx_complaints_created ON complaints(created_at);
+    CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status);
+
+    -- ผลสอบใหม่จากร้องเรียน
+    CREATE TABLE IF NOT EXISTS complaint_exams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      complaint_id INTEGER NOT NULL,
+      model_id TEXT NOT NULL,
+      question TEXT NOT NULL,
+      answer TEXT,
+      score REAL DEFAULT 0,
+      max_score REAL DEFAULT 10,
+      reasoning TEXT,
+      latency_ms INTEGER DEFAULT 0,
+      passed INTEGER DEFAULT 0,
+      tested_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (complaint_id) REFERENCES complaints(id),
+      FOREIGN KEY (model_id) REFERENCES models(id)
+    );
   `);
 }

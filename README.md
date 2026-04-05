@@ -24,6 +24,7 @@ Gateway อัจฉริยะที่รวม AI ฟรีจาก **8 ผ
 - [เชื่อมต่อกับ OpenClaw](#เชื่อมต่อกับ-openclaw)
 - [Virtual Models](#virtual-models)
 - [ฟีเจอร์ทั้งหมด](#ฟีเจอร์ทั้งหมด)
+- [ระบบร้องเรียน](#complaint-system-ระบบร้องเรียน)
 - [API Endpoints](#api-endpoints)
 - [Health Monitoring](#health-monitoring)
 - [ระบบ Benchmark](#ระบบ-benchmark)
@@ -452,6 +453,46 @@ curl http://localhost:3333/api/cost-savings
 - **Reasoning-to-Content**: Ollama gemma4 ใส่คำตอบใน reasoning field → ย้ายเป็น content อัตโนมัติ
 - **OpenAI Response Fields**: เติม `id`, `system_fingerprint`, `usage.total_tokens`, `logprobs`, `refusal` ให้ครบ
 
+### Complaint System (ระบบร้องเรียน)
+
+AI หรือคนแจ้งว่า model ตอบไม่ดี → cooldown ทันที → สอบใหม่ตามหัวข้อ → ให้คะแนนใหม่
+
+```bash
+# ร้องเรียน model
+curl -X POST http://localhost:3333/api/complaint \
+  -H "Content-Type: application/json" \
+  -d '{"model_id":"groq/qwen3-32b","category":"wrong_answer","reason":"ตอบผิด"}'
+
+# ดูประวัติร้องเรียน
+curl http://localhost:3333/api/complaint
+```
+
+**7 ประเภทร้องเรียน:**
+
+| Category | คำอธิบาย |
+|----------|---------|
+| `wrong_answer` | ตอบผิด |
+| `gibberish` | พูดไม่รู้เรื่อง |
+| `wrong_language` | ตอบผิดภาษา |
+| `refused` | ปฏิเสธตอบ |
+| `hallucination` | แต่งเรื่อง |
+| `too_short` | ตอบสั้นเกินไป |
+| `irrelevant` | ตอบไม่ตรงคำถาม |
+
+**ระบบทำงานอัตโนมัติ:**
+- ร้องเรียน → cooldown 30 นาที → สอบใหม่ทันที
+- สอบผ่าน (>=5/10) → clear cooldown กลับมาทำงาน
+- สอบตก (<5/10) → cooldown 2 ชม. + ลดเกรด + ตั้งชื่อใหม่
+- ร้องเรียน 10+ ครั้ง/วัน → แบน 24 ชม.
+- **Auto-Detect**: gateway ตรวจจับคำตอบว่าง/สั้นเกิน/ขยะ → ร้องเรียนอัตโนมัติ
+- **Reputation Score**: model ที่ถูกร้องเรียนบ่อย → ถูกลดลำดับความสำคัญในการเลือก
+
+**Dashboard แสดง:**
+- สถิติร้องเรียน (ทั้งหมด/รอ/ผ่าน/ตก/แบน)
+- ป้ายอับอาย (Hall of Shame) — top 3 model ที่ถูกร้องเรียนมากสุด
+- กระดานลงโทษ (Detention Board) — model ที่อยู่ระหว่างถูกลงโทษ
+- สมุดพก (Report Card) — คลิกดูรายละเอียดแต่ละใบร้องเรียน
+
 ### Charts & Analytics
 
 Dashboard แสดงกราฟ 4 ประเภท:
@@ -494,6 +535,8 @@ Dashboard แสดงกราฟ 4 ประเภท:
 | GET | `/api/cost-savings` | คำนวณเงินประหยัด |
 | GET | `/api/health` | Health check |
 | GET | `/api/analytics` | Charts data |
+| POST | `/api/complaint` | ร้องเรียน model |
+| GET | `/api/complaint` | ดูประวัติร้องเรียน + สถิติ |
 
 ---
 

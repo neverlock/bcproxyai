@@ -5,6 +5,8 @@ import { PROVIDER_URLS } from "@/lib/providers";
 import { clearCache } from "@/lib/cache";
 import { compressMessages } from "@/lib/prompt-compress";
 import { openAIError, ensureChatCompletionFields } from "@/lib/openai-compat";
+import { autoDetectComplaint } from "@/lib/auto-complaint";
+import { getReputationScore } from "@/lib/worker/complaint";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -561,7 +563,7 @@ export async function POST(req: NextRequest) {
     const userMsg = extractUserMessage(body);
     const triedProviders = new Set<string>();
 
-    // Weighted Load Balancing — all providers equal (including Ollama)
+    // Weighted Load Balancing — factor in reputation (complaint history)
     const spreadCandidates: typeof finalCandidates = [];
     const byProvider: Record<string, typeof finalCandidates> = {};
     for (const c of finalCandidates) {
@@ -571,7 +573,9 @@ export async function POST(req: NextRequest) {
       .map(([, models]) => {
         const avgLat = models.reduce((s, m) => s + (m.avg_latency ?? 9999999), 0) / models.length;
         const avgScore = models.reduce((s, m) => s + (m.avg_score ?? 0), 0) / models.length;
-        return { models, weight: avgScore * 1000 - avgLat };
+        // Reputation: 0-100, models with complaints get deprioritized
+        const avgRep = models.reduce((s, m) => s + getReputationScore(m.id), 0) / models.length;
+        return { models, weight: avgScore * 1000 * (avgRep / 100) - avgLat };
       })
       .sort((a, b) => b.weight - a.weight);
     // Round-robin across weighted providers
@@ -733,6 +737,10 @@ async function buildProxiedResponse(
 
     // Ensure all OpenAI-standard fields exist (id, object, created, system_fingerprint, usage)
     ensureChatCompletionFields(json, provider, modelId);
+
+    // Auto-detect bad responses and file complaint
+    const content = json.choices?.[0]?.message?.content ?? "";
+    autoDetectComplaint(provider, modelId, content);
 
     // Track token usage
     const usage = json.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
