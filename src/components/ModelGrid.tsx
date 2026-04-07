@@ -12,35 +12,16 @@ import {
 } from "./shared";
 import type { ModelData } from "./shared";
 
-// ─── Fun Grade System ─────────────────────────────────────────────────────────
-
-function getGrade(pct: number): { grade: string; label: string; color: string; emoji: string } {
-  if (pct >= 90) return { grade: "A+", label: "นักเรียนดีเด่น", color: "text-yellow-300", emoji: "🏆" };
-  if (pct >= 80) return { grade: "A", label: "เก่งมาก", color: "text-emerald-300", emoji: "⭐" };
-  if (pct >= 70) return { grade: "B+", label: "ดี", color: "text-cyan-300", emoji: "👍" };
-  if (pct >= 60) return { grade: "B", label: "พอใช้", color: "text-blue-300", emoji: "📘" };
-  if (pct >= 50) return { grade: "C+", label: "ผ่านหวุดหวิด", color: "text-amber-300", emoji: "😅" };
-  if (pct >= 40) return { grade: "C", label: "ต้องปรับปรุง", color: "text-orange-300", emoji: "📝" };
-  if (pct >= 30) return { grade: "D", label: "สอบตก", color: "text-red-300", emoji: "😢" };
-  return { grade: "F", label: "ไม่ผ่าน", color: "text-red-400", emoji: "💀" };
-}
+// ─── Fun Status ───────────────────────────────────────────────────────────────
 
 function getFunStatus(model: ModelData): { text: string; emoji: string } {
   if (model.health.status === "cooldown") {
-    return { text: "ไปพักผ่อนก่อน", emoji: "😴" };
+    return { text: "พักแป๊บ", emoji: "😴" };
   }
   if (model.health.status === "unknown") {
-    return { text: "ยังไม่มาเรียน", emoji: "🤷" };
+    return { text: "รอสแกน", emoji: "✏️" };
   }
-  if (!model.benchmark) {
-    return { text: "รอเข้าห้องสอบ", emoji: "✏️" };
-  }
-  const pct = (model.benchmark.avgScore / model.benchmark.maxScore) * 100;
-  if (pct >= 90) return { text: "หัวหน้าห้อง!", emoji: "👑" };
-  if (pct >= 70) return { text: "ขยันดีมาก", emoji: "💪" };
-  if (pct >= 50) return { text: "พอถูไถได้", emoji: "🙂" };
-  if (pct >= 30) return { text: "ต้องติวเพิ่ม", emoji: "📚" };
-  return { text: "ซ้ำชั้นเลย", emoji: "🫠" };
+  return { text: "พร้อมรับงาน", emoji: "💪" };
 }
 
 function getSpeedLabel(ms: number): { text: string; emoji: string } {
@@ -98,11 +79,6 @@ export function ModelGrid({ sortedModels, availableCount, cooldownCount, unknown
             const pc = PROVIDER_COLORS[model.provider] ?? PROVIDER_COLORS.openrouter;
             const cooldownText = fmtCooldown(model.health.cooldownUntil);
             const funStatus = getFunStatus(model);
-            const hasBenchmark = model.benchmark && model.benchmark.avgScore > 0;
-            const pct = hasBenchmark
-              ? Math.round((model.benchmark!.avgScore / model.benchmark!.maxScore) * 100)
-              : 0;
-            const gradeInfo = hasBenchmark ? getGrade(pct) : null;
             const speedInfo = model.health.latencyMs > 0 ? getSpeedLabel(model.health.latencyMs) : null;
 
             return (
@@ -114,7 +90,7 @@ export function ModelGrid({ sortedModels, availableCount, cooldownCount, unknown
                   "border border-white/5 opacity-40"
                 }`}
               >
-                {/* Header: name + grade badge */}
+                {/* Header: name + tier badge */}
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <GlowDot status={model.health.status} />
@@ -126,11 +102,6 @@ export function ModelGrid({ sortedModels, availableCount, cooldownCount, unknown
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    {gradeInfo && (
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-black ${gradeInfo.color} bg-white/5 border border-white/10`}>
-                        {gradeInfo.grade}
-                      </span>
-                    )}
                     <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${TIER_COLORS[model.tier] ?? TIER_COLORS.small}`}>
                       {TIER_LABELS[model.tier] ?? "S"}
                     </span>
@@ -154,43 +125,11 @@ export function ModelGrid({ sortedModels, availableCount, cooldownCount, unknown
                   )}
                 </div>
 
-                {/* Benchmark score + grade */}
-                {hasBenchmark ? (
-                  <div className="mb-2">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-gray-500">
-                        {model.benchmark!.avgScore.toFixed(1)}/{model.benchmark!.maxScore}
-                      </span>
-                      <span className={`text-xs font-bold ${gradeInfo?.color ?? "text-indigo-300"}`}>
-                        {pct}%
-                      </span>
-                    </div>
-                    <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-1000 ${
-                          pct >= 80 ? "bg-gradient-to-r from-yellow-500 to-amber-400" :
-                          pct >= 60 ? "bg-gradient-to-r from-indigo-500 to-cyan-500" :
-                          pct >= 40 ? "bg-gradient-to-r from-amber-500 to-orange-500" :
-                          "bg-gradient-to-r from-red-500 to-pink-500"
-                        }`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mb-2" />
-                )}
-
                 {/* Fun status line */}
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between mb-2">
                   <span className="text-xs text-gray-500">
                     {funStatus.emoji} {funStatus.text}
                   </span>
-                  {gradeInfo && (
-                    <span className={`text-xs ${gradeInfo.color}`}>
-                      {gradeInfo.emoji} {gradeInfo.label}
-                    </span>
-                  )}
                 </div>
 
                 {/* Cooldown */}

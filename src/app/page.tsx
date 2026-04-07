@@ -1,6 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+
+/** Parse user message — handle legacy JSON array format from DB */
+function parseUserMsg(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  if (!raw.startsWith("[")) return raw;
+  try {
+    const arr = JSON.parse(raw) as Array<{ type: string; text?: string }>;
+    if (Array.isArray(arr)) {
+      return arr.filter((p) => p.type === "text" && p.text).map((p) => p.text).join("") || raw;
+    }
+  } catch { /* not JSON */ }
+  return raw;
+}
 import {
   CircleProgress,
   GlowDot,
@@ -211,6 +224,7 @@ export default function Dashboard() {
     createdAt: string;
   }
   const [gatewayLogs, setGatewayLogs] = useState<GatewayLog[]>([]);
+  const [logDetail, setLogDetail] = useState<GatewayLog | null>(null);
 
   interface CostProvider {
     id: string;
@@ -336,7 +350,6 @@ export default function Dashboard() {
   const stepBadge: Record<string, string> = {
     scan:      "bg-blue-500/20 text-blue-300 border-blue-500/30",
     health:    "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-    benchmark: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30",
     worker:    "bg-gray-500/20 text-gray-300 border-gray-500/30",
   };
 
@@ -403,11 +416,11 @@ export default function Dashboard() {
             {[
               { id: "status",        icon: "\u{1F3EB}", label: "ครูใหญ่" },
               { id: "providers",     icon: "\u{1F50C}", label: "ผู้ให้บริการ" },
-              { id: "rankings",      icon: "\u{1F3C6}", label: "ผลสอบ" },
+              { id: "rankings",      icon: "\u{1F3C6}", label: "ผลงาน" },
               { id: "speed-race",    icon: "\u{1F3C1}", label: "วิ่งแข่ง" },
               { id: "analytics",     icon: "\u{1F4CA}", label: "สมุดพก" },
               { id: "all-models",    icon: "\u{1F393}", label: "นักเรียน" },
-              { id: "chat",          icon: "\u{1F4AC}", label: "สอบปากเปล่า" },
+              { id: "chat",          icon: "\u{1F4AC}", label: "แชท" },
               { id: "smart-routing", icon: "\u{1F9E0}", label: "จัดห้อง" },
               { id: "trend",         icon: "\u{1F4C8}", label: "พัฒนาการ" },
               { id: "uptime",        icon: "\u{1F4CB}", label: "ขาด/ลา" },
@@ -489,10 +502,6 @@ export default function Dashboard() {
                           <span className="text-indigo-300 font-medium">{fmtCountdown(statusData.worker.nextRun)}</span>
                         </div>
                       )}
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-amber-400">📝</span>
-                        <span className="text-amber-300">คุมสอบ: <span className="font-medium">DeepSeek Chat</span></span>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -714,9 +723,9 @@ export default function Dashboard() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
               </span>
-              ผลสอบ — ใครเก่งสุด?
+              ผลงาน — ใครเก่งสุด?
             </h2>
-            <span className="text-sm text-gray-500">{leaderboard.length} คนเข้าสอบ</span>
+            <span className="text-sm text-gray-500">{leaderboard.length} โมเดล</span>
           </div>
 
           {loading ? (
@@ -726,7 +735,7 @@ export default function Dashboard() {
           ) : leaderboard.length === 0 ? (
             <div className="glass rounded-2xl p-12 text-center text-gray-500">
               <div className="text-5xl mb-3">🏆</div>
-              <p>ยังไม่มีผลสอบ — กด &quot;สั่งเช็คชื่อเลย!&quot; เพื่อเริ่มสอบ</p>
+              <p>ยังไม่มีข้อมูล — กด &quot;สั่งเช็คชื่อเลย!&quot; เพื่อเริ่มสแกน</p>
             </div>
           ) : (
             <div className="glass rounded-2xl overflow-hidden">
@@ -848,7 +857,7 @@ export default function Dashboard() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
             </span>
-            <h2 className="text-2xl font-bold text-white">สอบปากเปล่า</h2>
+            <h2 className="text-2xl font-bold text-white">แชท</h2>
           </div>
           <ChatPanel availableModels={availableModels} />
         </section>
@@ -996,11 +1005,16 @@ export default function Dashboard() {
                           </td>
                           <td className="px-3 py-2 text-right text-gray-400">{fmtMs(log.latencyMs)}</td>
                           <td className="px-3 py-2 text-gray-500 truncate max-w-[200px]">
-                            {log.error ? (
-                              <span className="text-red-400" title={log.error}>{log.error.slice(0, 80)}</span>
-                            ) : (
-                              <span title={log.userMessage ?? ""}>{log.userMessage?.slice(0, 60) ?? "—"}</span>
-                            )}
+                            <button
+                              className="text-left hover:text-gray-300 transition-colors cursor-pointer truncate max-w-full"
+                              onClick={() => setLogDetail(log)}
+                            >
+                              {log.error ? (
+                                <span className="text-red-400">{log.error.slice(0, 80)}</span>
+                              ) : (
+                                <span>{parseUserMsg(log.userMessage)?.slice(0, 60) ?? "—"}</span>
+                              )}
+                            </button>
                           </td>
                         </tr>
                       );
@@ -1062,6 +1076,52 @@ export default function Dashboard() {
 
       {/* ── Setup Modal ──────────────────────────────────────────────────── */}
       <SetupModal open={showSetup} onClose={() => setShowSetup(false)} />
+
+      {/* ── Log Detail Modal ─────────────────────────────────────────────── */}
+      {logDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setLogDetail(null)}>
+          <div className="bg-gray-900 border border-white/10 rounded-2xl shadow-2xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+              <div className="flex items-center gap-3">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold ${
+                  logDetail.status >= 200 && logDetail.status < 300 ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"
+                }`}>
+                  {logDetail.status}
+                </span>
+                {logDetail.provider && <ProviderBadge provider={logDetail.provider} />}
+                <span className="text-gray-500 text-xs">{fmtMs(logDetail.latencyMs)}</span>
+              </div>
+              <button onClick={() => setLogDetail(null)} className="text-gray-500 hover:text-white text-lg cursor-pointer">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Model</div>
+                <div className="text-sm text-indigo-300 font-mono">{logDetail.requestModel} → {logDetail.resolvedModel ?? "—"}</div>
+              </div>
+              {logDetail.error && (
+                <div>
+                  <div className="text-xs text-gray-500 mb-1">Error</div>
+                  <div className="text-sm text-red-400 bg-red-500/10 rounded-lg p-3 font-mono whitespace-pre-wrap break-all">{logDetail.error}</div>
+                </div>
+              )}
+              <div>
+                <div className="text-xs text-gray-500 mb-1">ข้อความผู้ใช้</div>
+                <div className="text-sm text-gray-300 bg-white/5 rounded-lg p-3 whitespace-pre-wrap break-all">
+                  {parseUserMsg(logDetail.userMessage) ?? "—"}
+                </div>
+              </div>
+              {logDetail.assistantMessage && (
+                <div>
+                  <div className="text-xs text-gray-500 mb-1">คำตอบ AI</div>
+                  <div className="text-sm text-gray-300 bg-white/5 rounded-lg p-3 whitespace-pre-wrap break-all">
+                    {logDetail.assistantMessage}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

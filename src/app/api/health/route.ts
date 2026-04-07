@@ -73,9 +73,9 @@ export async function GET() {
         SELECT hl.model_id, hl.status, hl.cooldown_until
         FROM health_logs hl
         INNER JOIN (
-          SELECT model_id, MAX(checked_at) as max_checked
+          SELECT model_id, MAX(id) as max_id
           FROM health_logs GROUP BY model_id
-        ) latest ON hl.model_id = latest.model_id AND hl.checked_at = latest.max_checked
+        ) latest ON hl.model_id = latest.model_id AND hl.id = latest.max_id
       ) h ON m.id = h.model_id
       WHERE (h.status IS NULL OR h.status = 'available' OR h.status = 'error')
         AND (h.cooldown_until IS NULL OR h.cooldown_until <= datetime('now'))
@@ -86,9 +86,9 @@ export async function GET() {
       SELECT COUNT(DISTINCT h.model_id) as count
       FROM health_logs h
       INNER JOIN (
-        SELECT model_id, MAX(checked_at) as max_checked
+        SELECT model_id, MAX(id) as max_id
         FROM health_logs GROUP BY model_id
-      ) latest ON h.model_id = latest.model_id AND h.checked_at = latest.max_checked
+      ) latest ON h.model_id = latest.model_id AND h.id = latest.max_id
       WHERE h.cooldown_until > datetime('now')
     `).get() as { count: number };
     const cooldown = cooldownRow.count;

@@ -7,7 +7,6 @@ const TABS = [
   { id: "openclaw", label: "เชื่อมต่อ OpenClaw" },
   { id: "install", label: "การติดตั้ง" },
   { id: "api", label: "API Reference" },
-  { id: "about", label: "ระบบ Benchmark" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -116,7 +115,7 @@ function UsageGuide() {
         </Paragraph>
         <table className="w-full">
           <tbody>
-            <TableRow label="auto" value="เลือกโมเดลที่คะแนน benchmark สูงสุด (แนะนำ)" />
+            <TableRow label="auto" value="เลือกโมเดลที่ดีที่สุดอัตโนมัติ (แนะนำ)" />
             <TableRow label="bcproxy/fast" value="เลือกโมเดลที่ตอบเร็วที่สุด (latency ต่ำสุด)" />
             <TableRow label="bcproxy/tools" value="เลือกโมเดลที่รองรับ tool calling (เรียกฟังก์ชัน)" />
             <TableRow label="bcproxy/thai" value="เลือกโมเดลที่เก่งภาษาไทย (คะแนนสูงสุด)" />
@@ -164,11 +163,10 @@ kilo/nvidia/nemotron-3-super-120b-a12b:free`}</Code>
 
       <div>
         <SectionTitle>Worker อัตโนมัติ</SectionTitle>
-        <Paragraph>Worker (โปรแกรมทำงานเบื้องหลัง) ทำงาน 3 ขั้นตอน ทุก 1 ชั่วโมง:</Paragraph>
+        <Paragraph>Worker (โปรแกรมทำงานเบื้องหลัง) ทำงาน 2 ขั้นตอน ทุก 1 ชั่วโมง:</Paragraph>
         <ul className="list-decimal list-inside text-sm text-gray-400 space-y-2 ml-2">
           <li><span className="text-blue-300 font-medium">Scan</span> -- สแกนโมเดลฟรีจาก 13 ผู้ให้บริการ ตรวจจับโมเดลใหม่/หายไป</li>
           <li><span className="text-emerald-300 font-medium">Health Check</span> -- ส่ง ping ทดสอบ พักโมเดลที่ติด limit ทดสอบ tool/vision support</li>
-          <li><span className="text-indigo-300 font-medium">Benchmark</span> -- สอบ 10 ข้อ 8 หมวด (Thai, Code, Math, Vision, Creative...) ให้คะแนน 0-10 เลือก model ตามความถนัด</li>
         </ul>
       </div>
 
@@ -177,9 +175,9 @@ kilo/nvidia/nemotron-3-super-120b-a12b:free`}</Code>
         <Paragraph>หน้านี้แหละ! รีเฟรชอัตโนมัติทุก 15 วินาที แสดง:</Paragraph>
         <ul className="list-disc list-inside text-sm text-gray-400 space-y-1 ml-2">
           <li>สถานะ Worker + นับถอยหลังรอบถัดไป</li>
-          <li>สถิติโมเดลทั้งหมด / พร้อมใช้ / พักผ่อน / มีคะแนน</li>
+          <li>สถิติโมเดลทั้งหมด / พร้อมใช้ / พักผ่อน</li>
           <li>แจ้งเตือนโมเดลใหม่ / หายชั่วคราว / หายถาวร</li>
-          <li>อันดับโมเดลตามคะแนน Benchmark</li>
+          <li>อันดับโมเดลตามการใช้งานจริง</li>
           <li>ทดลองแชทกับโมเดลได้ทันที</li>
           <li>บันทึกการทำงานของ Worker</li>
         </ul>
@@ -617,8 +615,8 @@ function ApiGuide() {
           <tbody>
             {[
               { method: "GET", path: "/api/status", desc: "สถานะ worker + สถิติ + โมเดลใหม่/หายไป" },
-              { method: "GET", path: "/api/models", desc: "โมเดลทั้งหมด + health + benchmark" },
-              { method: "GET", path: "/api/leaderboard", desc: "อันดับโมเดลตามคะแนน" },
+              { method: "GET", path: "/api/models", desc: "โมเดลทั้งหมด + health status" },
+              { method: "GET", path: "/api/leaderboard", desc: "อันดับโมเดลตามการใช้งานจริง" },
               { method: "GET", path: "/api/worker", desc: "สถานะ worker" },
               { method: "POST", path: "/api/worker", desc: "สั่ง worker รันทันที" },
               { method: "POST", path: "/api/chat", desc: "Chat API สำหรับ Dashboard" },
@@ -829,7 +827,6 @@ export function GuideModal({ onClose }: { onClose: () => void }) {
           {activeTab === "openclaw" && <OpenClawGuide />}
           {activeTab === "install" && <InstallGuide />}
           {activeTab === "api" && <ApiGuide />}
-          {activeTab === "about" && <AboutGuide />}
         </div>
       </div>
     </div>

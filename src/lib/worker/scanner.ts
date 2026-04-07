@@ -12,6 +12,16 @@ interface ModelRow {
   description?: string;
   supports_vision?: number;  // 1 = yes, 0 = no, -1 = unknown
   supports_tools?: number;
+  supports_audio_input?: number;
+  supports_audio_output?: number;
+  supports_image_gen?: number;
+  supports_embedding?: number;
+  supports_json_mode?: number;
+  supports_reasoning?: number;
+  supports_code?: number;
+  max_output_tokens?: number;
+  pricing_input?: number;
+  pricing_output?: number;
 }
 
 // ─── Vision & Tools detection from model name / metadata ─────────────────────
@@ -28,8 +38,54 @@ const TOOLS_PATTERNS = [
   /gemini/i, /gpt-4/i, /gpt-3\.5/i, /claude/i, /mistral.*large/i,
   /mistral.*medium/i, /mixtral/i, /command-r/i, /qwen/i, /llama-3/i,
   /llama-4/i, /deepseek/i, /hermes/i, /firefunction/i, /gorilla/i,
-  /nexusraven/i, /functionary/i,
+  /nexusraven/i, /functionary/i, /gemma/i,
 ];
+
+const REASONING_PATTERNS = [
+  /deepseek-r1/i, /\bo[13]\b/i, /o1-/i, /o3-/i, /qwq/i, /reasoning/i,
+  /think/i, /magistral/i, /r1-distill/i,
+];
+
+const CODE_PATTERNS = [
+  /codestral/i, /starcoder/i, /codellama/i, /code-/i, /coder/i,
+  /devstral/i, /deepseek-coder/i, /granite-code/i, /leanstral/i,
+];
+
+const EMBEDDING_PATTERNS = [
+  /embed/i, /e5-/i, /bge-/i, /gte-/i, /nomic-embed/i, /text-embedding/i,
+];
+
+const IMAGE_GEN_PATTERNS = [
+  /dall-e/i, /stable-diffusion/i, /sdxl/i, /flux/i, /imagen/i,
+  /lyria/i, /playground/i,
+];
+
+const AUDIO_INPUT_PATTERNS = [
+  /whisper/i, /transcri/i, /voxtral/i, /speech-to/i,
+];
+
+const AUDIO_OUTPUT_PATTERNS = [
+  /tts/i, /speech/i, /voxtral.*tts/i, /audio.*output/i,
+];
+
+const JSON_MODE_PATTERNS = [
+  /gpt-4/i, /gpt-3\.5/i, /gemini/i, /claude/i, /mistral.*large/i,
+  /mistral.*medium/i, /mistral.*small/i, /qwen/i, /llama-3/i, /llama-4/i,
+  /deepseek/i, /gemma/i, /command-r/i,
+];
+
+function detectCaps(modelId: string, name: string): Partial<ModelRow> {
+  const combined = `${modelId} ${name}`;
+  return {
+    supports_reasoning: REASONING_PATTERNS.some(p => p.test(combined)) ? 1 : 0,
+    supports_code: CODE_PATTERNS.some(p => p.test(combined)) ? 1 : 0,
+    supports_embedding: EMBEDDING_PATTERNS.some(p => p.test(combined)) ? 1 : 0,
+    supports_image_gen: IMAGE_GEN_PATTERNS.some(p => p.test(combined)) ? 1 : 0,
+    supports_audio_input: AUDIO_INPUT_PATTERNS.some(p => p.test(combined)) ? 1 : 0,
+    supports_audio_output: AUDIO_OUTPUT_PATTERNS.some(p => p.test(combined)) ? 1 : 0,
+    supports_json_mode: JSON_MODE_PATTERNS.some(p => p.test(combined)) ? 1 : 0,
+  };
+}
 
 function detectVision(modelId: string, name: string, providerMeta?: { vision?: boolean }): number {
   if (providerMeta?.vision === true) return 1;
@@ -574,11 +630,17 @@ export async function scanModels(): Promise<{ found: number; new: number; disapp
   let newCount = 0;
 
   const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO models (id, name, provider, model_id, context_length, tier, description, supports_vision, supports_tools)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO models (id, name, provider, model_id, context_length, tier, description,
+      supports_vision, supports_tools, supports_audio_input, supports_audio_output,
+      supports_image_gen, supports_embedding, supports_json_mode, supports_reasoning, supports_code,
+      max_output_tokens, pricing_input, pricing_output)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const updateStmt = db.prepare(`
-    UPDATE models SET last_seen = datetime('now'), context_length = ?, tier = ?, supports_vision = ?, supports_tools = ?
+    UPDATE models SET last_seen = datetime('now'), context_length = ?, tier = ?,
+      supports_vision = ?, supports_tools = ?, supports_audio_input = ?, supports_audio_output = ?,
+      supports_image_gen = ?, supports_embedding = ?, supports_json_mode = ?, supports_reasoning = ?, supports_code = ?,
+      max_output_tokens = ?, pricing_input = ?, pricing_output = ?
     WHERE id = ?
   `);
 
@@ -586,9 +648,14 @@ export async function scanModels(): Promise<{ found: number; new: number; disapp
 
   const upsertMany = db.transaction((models: ModelRow[]) => {
     for (const m of models) {
+      const caps = detectCaps(m.model_id, m.name);
       const result = insertStmt.run(
         m.id, m.name, m.provider, m.model_id, m.context_length, m.tier, m.description ?? null,
-        m.supports_vision ?? -1, m.supports_tools ?? -1
+        m.supports_vision ?? -1, m.supports_tools ?? -1,
+        caps.supports_audio_input ?? 0, caps.supports_audio_output ?? 0,
+        caps.supports_image_gen ?? 0, caps.supports_embedding ?? 0,
+        caps.supports_json_mode ?? 0, caps.supports_reasoning ?? 0, caps.supports_code ?? 0,
+        m.max_output_tokens ?? 0, m.pricing_input ?? 0, m.pricing_output ?? 0
       );
       if (result.changes > 0) {
         newCount++;
@@ -596,7 +663,13 @@ export async function scanModels(): Promise<{ found: number; new: number; disapp
         emitEvent("model_new", `โมเดลใหม่: ${m.name}`, `${m.provider} — ${calcTier(m.context_length).toUpperCase()} ${m.context_length >= 1000 ? Math.round(m.context_length/1000)+"K" : m.context_length} ctx`, m.provider, m.id, "success");
         logWorker("scan", `🆕 โมเดลใหม่: ${m.name} (${m.provider}) — ${calcTier(m.context_length).toUpperCase()} ${m.context_length >= 1000 ? Math.round(m.context_length/1000)+"K" : m.context_length} ctx`, "success");
       } else {
-        updateStmt.run(m.context_length, m.tier, m.supports_vision ?? -1, m.supports_tools ?? -1, m.id);
+        updateStmt.run(m.context_length, m.tier,
+          m.supports_vision ?? -1, m.supports_tools ?? -1,
+          caps.supports_audio_input ?? 0, caps.supports_audio_output ?? 0,
+          caps.supports_image_gen ?? 0, caps.supports_embedding ?? 0,
+          caps.supports_json_mode ?? 0, caps.supports_reasoning ?? 0, caps.supports_code ?? 0,
+          m.max_output_tokens ?? 0, m.pricing_input ?? 0, m.pricing_output ?? 0,
+          m.id);
       }
     }
   });

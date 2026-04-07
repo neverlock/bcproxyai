@@ -20,8 +20,6 @@ const EVENT_STYLES: Record<string, { icon: string; bg: string; text: string; sou
   complaint:      { icon: "📝", bg: "bg-amber-500/20", text: "text-amber-400", sound: "bell" },
   provider_error: { icon: "💥", bg: "bg-red-500/20", text: "text-red-400", sound: "alarm" },
   provider_back:  { icon: "✅", bg: "bg-emerald-500/20", text: "text-emerald-400", sound: "ding" },
-  exam_passed:    { icon: "🎓", bg: "bg-green-500/20", text: "text-green-400", sound: "ding" },
-  exam_failed:    { icon: "❌", bg: "bg-red-500/20", text: "text-red-400", sound: "bell" },
 };
 
 export function SchoolBellPanel() {

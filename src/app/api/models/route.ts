@@ -49,10 +49,10 @@ export async function GET(req: NextRequest) {
           SELECT hl.model_id, hl.status, hl.latency_ms, hl.checked_at, hl.cooldown_until
           FROM health_logs hl
           INNER JOIN (
-            SELECT model_id, MAX(checked_at) as max_checked
+            SELECT model_id, MAX(id) as max_id
             FROM health_logs
             GROUP BY model_id
-          ) latest ON hl.model_id = latest.model_id AND hl.checked_at = latest.max_checked
+          ) latest ON hl.model_id = latest.model_id AND hl.id = latest.max_id
         ) h ON m.id = h.model_id
         LEFT JOIN (
           SELECT

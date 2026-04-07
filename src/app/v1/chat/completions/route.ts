@@ -54,10 +54,30 @@ interface ModelRow {
   supports_tools: number;
   supports_vision: number;
   tier: string;
+  context_length: number;
   avg_score: number | null;
   avg_latency: number | null;
   health_status: string | null;
   cooldown_until: string | null;
+}
+
+// ─── In-Memory Provider Cooldown ───
+// ไม่ต้องเขียน health_logs ทุก model → ใช้ Map ในเมมเร็วกว่า ไม่ bloat DB
+const providerCooldowns = new Map<string, { until: number; reason: string }>();
+
+function isProviderCooledDown(provider: string): boolean {
+  const cd = providerCooldowns.get(provider);
+  if (!cd) return false;
+  if (Date.now() > cd.until) {
+    providerCooldowns.delete(provider);
+    return false;
+  }
+  return true;
+}
+
+function setProviderCooldown(provider: string, ms: number, reason: string) {
+  providerCooldowns.set(provider, { until: Date.now() + ms, reason });
+  console.log(`[COOLDOWN] ${provider} → ${Math.round(ms / 60000)}min | ${reason}`);
 }
 
 interface RequestCapabilities {
@@ -109,10 +129,13 @@ function getAvailableModels(caps: RequestCapabilities, benchmarkCategory?: strin
   const now = new Date().toISOString();
 
   const filters: string[] = [
-    "(h.status IS NULL OR h.status = 'available')",
+    // Simple: model is available if no cooldown or cooldown expired
     "(h.cooldown_until IS NULL OR h.cooldown_until < ?)",
+    // Exclude non-chat models (embedding, TTS, image-gen only)
+    "COALESCE(m.supports_embedding, 0) != 1",
+    "COALESCE(m.supports_audio_output, 0) != 1",
+    "COALESCE(m.supports_image_gen, 0) != 1",
   ];
-  if (caps.hasTools) filters.push("m.supports_tools = 1");
   if (caps.hasImages) filters.push("m.supports_vision = 1");
 
   const whereClause = filters.join(" AND ");
@@ -149,9 +172,14 @@ function getAvailableModels(caps: RequestCapabilities, benchmarkCategory?: strin
     : "";
   const visionOrder = caps.hasImages ? "vision_priority ASC," : "";
 
+  // Tools requests: prefer models that support tools + large context (OpenClaw sends 50-100 messages)
+  const toolsBoost = caps.hasTools
+    ? "CASE WHEN m.supports_tools = 1 THEN 0 ELSE 1 END ASC, CASE WHEN m.context_length >= 128000 THEN 0 WHEN m.context_length >= 32000 THEN 1 ELSE 2 END ASC,"
+    : "";
+
   const orderClause = caps.needsJsonSchema
-    ? `${visionOrder} CASE WHEN m.tier = 'large' THEN 0 ELSE 1 END ASC, CASE WHEN ${scoreExpr} > 0 THEN 0 ELSE 1 END ASC, ${scoreExpr} DESC, m.context_length DESC, ${latencyExpr} ASC`
-    : `${visionOrder} CASE WHEN ${scoreExpr} > 0 THEN 0 ELSE 1 END ASC, ${scoreExpr} DESC, m.context_length DESC, ${latencyExpr} ASC`;
+    ? `${toolsBoost} ${visionOrder} CASE WHEN m.tier = 'large' THEN 0 ELSE 1 END ASC, CASE WHEN ${scoreExpr} > 0 THEN 0 ELSE 1 END ASC, ${scoreExpr} DESC, m.context_length DESC, ${latencyExpr} ASC`
+    : `${toolsBoost} ${visionOrder} CASE WHEN ${scoreExpr} > 0 THEN 0 ELSE 1 END ASC, ${scoreExpr} DESC, m.context_length DESC, ${latencyExpr} ASC`;
 
   const rows = db
     .prepare(
@@ -175,16 +203,25 @@ function getAvailableModels(caps: RequestCapabilities, benchmarkCategory?: strin
         SELECT hl.model_id, hl.status, hl.cooldown_until
         FROM health_logs hl
         INNER JOIN (
-          SELECT model_id, MAX(checked_at) as max_checked
+          SELECT model_id, MAX(id) as max_id
           FROM health_logs
           GROUP BY model_id
-        ) latest ON hl.model_id = latest.model_id AND hl.checked_at = latest.max_checked
+        ) latest ON hl.model_id = latest.model_id AND hl.id = latest.max_id
       ) h ON m.id = h.model_id
       WHERE ${whereClause}
       ORDER BY ${orderClause}
     `
     )
     .all(now) as ModelRow[];
+
+  // DEBUG: log query results
+  const providerCount: Record<string, number> = {};
+  for (const r of rows) providerCount[r.provider] = (providerCount[r.provider] || 0) + 1;
+  console.log(`[DEBUG] mode=auto candidates=${rows.length} providers=${JSON.stringify(providerCount)}`);
+  if (rows.length > 0) {
+    const top3 = rows.slice(0, 3).map(r => `${r.provider}/${r.model_id}`);
+    console.log(`[DEBUG] after boost: candidates=${rows.length} top3=[${top3}]`);
+  }
 
   return rows;
 }
@@ -228,35 +265,38 @@ function extractUserMessage(body: Record<string, unknown>): string | null {
   if (!messages || messages.length === 0) return null;
   const last = messages[messages.length - 1];
   if (typeof last.content === "string") return last.content.slice(0, 500);
+  if (Array.isArray(last.content)) {
+    return (last.content as Array<{ type: string; text?: string }>)
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text)
+      .join("")
+      .slice(0, 500) || null;
+  }
   return JSON.stringify(last.content).slice(0, 500);
 }
 
 function logCooldown(modelId: string, errorMsg: string, httpStatus = 0, overrideMinutes?: number) {
   try {
     const db = getDb();
-    // Smart cooldown based on error type
+    // Cooldown เฉพาะ model — สั้นๆ พอให้ลองใหม่ได้เร็ว
     let cooldownMs: number;
     if (overrideMinutes !== undefined) {
       cooldownMs = overrideMinutes * 60 * 1000;
-    } else if (httpStatus === 413) {
-      cooldownMs = 15 * 60 * 1000;    // 15 นาที — request ใหญ่เกินไป (ลองใหม่ได้เร็ว)
     } else if (httpStatus === 429) {
-      cooldownMs = 30 * 60 * 1000;    // 30 นาที — rate limit
+      cooldownMs = 2 * 60 * 1000;     // 2 นาที — rate limit
     } else if (httpStatus === 410) {
-      cooldownMs = 7 * 24 * 60 * 60 * 1000; // 7 วัน — model ถูกถอด (Gone)
-    } else if (httpStatus === 400) {
-      cooldownMs = 10 * 60 * 1000;    // 10 นาที — bad request (อาจเป็น rate limit แฝง)
-    } else if (httpStatus >= 500) {
-      cooldownMs = 60 * 60 * 1000;    // 1 ชม. — server error (provider มีปัญหา)
+      cooldownMs = 24 * 60 * 60 * 1000; // 24 ชม. — model ถูกถอด (Gone)
     } else if (httpStatus === 401 || httpStatus === 403) {
-      cooldownMs = 24 * 60 * 60 * 1000; // 24 ชม. — auth error (key หมดอายุ/ผิด)
+      cooldownMs = 60 * 60 * 1000;    // 1 ชม. — auth error
+    } else if (httpStatus >= 500) {
+      cooldownMs = 5 * 60 * 1000;     // 5 นาที — server error
     } else {
-      cooldownMs = 30 * 60 * 1000;    // 30 นาที — default
+      cooldownMs = 1 * 60 * 1000;     // 1 นาที — default (400, 413, 422)
     }
     const cooldownUntil = new Date(Date.now() + cooldownMs).toISOString();
     db.prepare(
       `INSERT INTO health_logs (model_id, status, error, cooldown_until, checked_at)
-       VALUES (?, 'rate_limited', ?, ?, datetime('now'))`
+       VALUES (?, 'available', ?, ?, datetime('now'))`
     ).run(modelId, errorMsg, cooldownUntil);
     // Clear model cache so next request gets fresh data
     clearCache("models:");
@@ -264,6 +304,19 @@ function logCooldown(modelId: string, errorMsg: string, httpStatus = 0, override
   } catch {
     // non-critical
   }
+}
+
+function cooldownProvider(provider: string, httpStatus: number, errorMsg: string) {
+  // In-memory provider cooldown — ไม่ bloat health_logs DB
+  let cooldownMs: number;
+  if (httpStatus === 429) {
+    cooldownMs = 5 * 60 * 1000;        // 5 นาที — rate limit
+  } else if (httpStatus === 401 || httpStatus === 403) {
+    cooldownMs = 60 * 60 * 1000;       // 1 ชม. — auth error
+  } else {
+    cooldownMs = 5 * 60 * 1000;        // 5 นาที — default
+  }
+  setProviderCooldown(provider, cooldownMs, `HTTP ${httpStatus}: ${errorMsg}`);
 }
 
 function parseModelField(model: string): {
@@ -291,8 +344,12 @@ function parseModelField(model: string): {
 // Last resort: get ALL models including cooldown ones — better than 503
 function getAllModelsIncludingCooldown(caps: RequestCapabilities): ModelRow[] {
   const db = getDb();
-  const filters: string[] = ["m.context_length >= 32000"];
-  if (caps.hasTools) filters.push("m.supports_tools = 1");
+  const filters: string[] = [
+    "m.context_length >= 32000",
+    "COALESCE(m.supports_embedding, 0) != 1",
+    "COALESCE(m.supports_audio_output, 0) != 1",
+    "COALESCE(m.supports_image_gen, 0) != 1",
+  ];
   if (caps.hasImages) filters.push("m.supports_vision = 1");
   const whereClause = filters.join(" AND ");
 
@@ -325,10 +382,11 @@ function selectModelsByMode(
   if (mode === "fast") {
     // fastest = lowest latency, still apply capability filters
     const filters: string[] = [
-      "(h.status IS NULL OR h.status = 'available' OR h.status = 'error')",
       "(h.cooldown_until IS NULL OR h.cooldown_until < ?)",
+      "COALESCE(m.supports_embedding, 0) != 1",
+      "COALESCE(m.supports_audio_output, 0) != 1",
+      "COALESCE(m.supports_image_gen, 0) != 1",
     ];
-    if (caps.hasTools) filters.push("m.supports_tools = 1");
     if (caps.hasImages) filters.push("m.supports_vision = 1");
     const whereClause = filters.join(" AND ");
 
@@ -394,6 +452,86 @@ async function forwardToProvider(
 
   const requestBody: Record<string, unknown> = { ...body, model: actualModelId };
 
+  // Strip OpenClaw-specific params that most providers reject
+  delete requestBody.store;           // OpenAI-only param
+  delete requestBody.stream_options;  // Not widely supported
+  // max_completion_tokens → max_tokens for non-OpenAI providers
+  if (requestBody.max_completion_tokens && !requestBody.max_tokens) {
+    requestBody.max_tokens = requestBody.max_completion_tokens;
+    delete requestBody.max_completion_tokens;
+  }
+
+  // Normalize messages — strip extra fields and fix tool_call format
+  // OpenClaw sends "reasoning" field and tool_calls with empty "type" field,
+  // both of which Mistral/Groq reject with 422/400
+  if (Array.isArray(requestBody.messages)) {
+    for (const msg of requestBody.messages as Array<Record<string, unknown>>) {
+      // Strip reasoning fields (Mistral/Groq don't support)
+      if (msg.reasoning !== undefined) delete msg.reasoning;
+      if (msg.reasoning_content !== undefined) delete msg.reasoning_content;
+
+      // Force tool_calls[].type = "function" — OpenClaw sends "" which all providers reject
+      if (Array.isArray(msg.tool_calls)) {
+        const tcs = msg.tool_calls as Array<Record<string, unknown>>;
+        if (tcs.length === 0) {
+          // Empty tool_calls array → remove it (Mistral rejects assistant with empty tool_calls + null content)
+          delete msg.tool_calls;
+        } else {
+          for (const tc of tcs) {
+            if (tc.type !== "function") tc.type = "function";
+          }
+          // Assistant with tool_calls should have content: null (not "")
+          if (msg.content === "") msg.content = null;
+        }
+      }
+
+      // Mistral rule: assistant message must have content OR tool_calls (not neither)
+      if (msg.role === "assistant" && !msg.tool_calls) {
+        if (msg.content === null || msg.content === undefined || msg.content === "") {
+          msg.content = " "; // single space — satisfies "must have content"
+        }
+      }
+    }
+  }
+
+  // Mistral: fix tool_call_id format (must be exactly 9 alphanumeric chars)
+  // OpenClaw sends "exec1774786568428215" → Mistral rejects with 422
+  if (provider === "mistral" && Array.isArray(requestBody.messages)) {
+    const idMap = new Map<string, string>(); // old → new mapping
+    let counter = 0;
+    const msgs = requestBody.messages as Array<{ role: string; tool_calls?: Array<{ id: string }>; tool_call_id?: string }>;
+    for (const msg of msgs) {
+      // Fix assistant tool_calls[].id
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (tc.id && (tc.id.length !== 9 || !/^[a-zA-Z0-9]+$/.test(tc.id))) {
+            if (!idMap.has(tc.id)) {
+              idMap.set(tc.id, `tc${String(counter++).padStart(7, "0")}`);
+            }
+            tc.id = idMap.get(tc.id)!;
+          }
+        }
+      }
+      // Fix tool result tool_call_id
+      if (msg.role === "tool" && msg.tool_call_id) {
+        if (idMap.has(msg.tool_call_id)) {
+          msg.tool_call_id = idMap.get(msg.tool_call_id)!;
+        } else if (msg.tool_call_id.length !== 9 || !/^[a-zA-Z0-9]+$/.test(msg.tool_call_id)) {
+          const newId = `tc${String(counter++).padStart(7, "0")}`;
+          idMap.set(msg.tool_call_id, newId);
+          msg.tool_call_id = newId;
+        }
+      }
+    }
+    if (idMap.size > 0) {
+      console.log(`[FWD] Fixed ${idMap.size} tool_call_ids for Mistral compatibility`);
+    }
+    // Cap max_tokens for Mistral (some models have lower limits)
+    if (requestBody.max_tokens && (requestBody.max_tokens as number) > 16384) {
+      requestBody.max_tokens = 16384;
+    }
+  }
+
   // Ollama: convert image URLs to base64 (Ollama doesn't support image URLs)
   if (provider === "ollama" && Array.isArray(requestBody.messages)) {
     const msgs = requestBody.messages as Array<{ role: string; content: unknown }>;
@@ -424,15 +562,58 @@ async function forwardToProvider(
     }
   }
 
+  // Strip tools if model doesn't support them OR if request has images
+  // Many providers reject tools + images together
+  const hasImagesInReq = Array.isArray(requestBody.messages) && (requestBody.messages as Array<{content: unknown}>).some(
+    m => Array.isArray(m.content) && (m.content as Array<{type: string}>).some(p => p.type === "image_url")
+  );
+  // Strip tools when needed (images or model doesn't support)
+  let toolsStripped = false;
+  if (hasImagesInReq && requestBody.tools) {
+    console.log(`[FWD] Stripping tools (images+tools incompatible) for ${provider}/${actualModelId}`);
+    delete requestBody.tools;
+    delete requestBody.tool_choice;
+    toolsStripped = true;
+  }
+  if (!toolsStripped) {
+    try {
+      const db = getDb();
+      const row = db.prepare("SELECT supports_tools FROM models WHERE provider = ? AND model_id = ?").get(provider, actualModelId) as { supports_tools: number } | undefined;
+      if (row && row.supports_tools !== 1 && requestBody.tools) {
+        console.log(`[FWD] Stripping tools (supports_tools=${row.supports_tools}) for ${provider}/${actualModelId}`);
+        delete requestBody.tools;
+        delete requestBody.tool_choice;
+        toolsStripped = true;
+      }
+    } catch { /* non-critical */ }
+  }
+
+  // When tools are stripped, also clean tool-related messages from history
+  // Providers reject orphaned role="tool" messages when tools field is absent
+  if (toolsStripped && Array.isArray(requestBody.messages)) {
+    const msgs = requestBody.messages as Array<{ role: string; tool_calls?: unknown; tool_call_id?: string }>;
+    requestBody.messages = msgs.filter(m => {
+      if (m.role === "tool") return false; // remove tool result messages
+      if (m.role === "assistant" && m.tool_calls) {
+        delete m.tool_calls; // keep assistant message but remove tool_calls
+      }
+      return true;
+    });
+    console.log(`[FWD] Cleaned tool messages: ${msgs.length} → ${(requestBody.messages as unknown[]).length} msgs`);
+  }
+
   // Ollama: set large context window via options.num_ctx
   if (provider === "ollama") {
     requestBody.options = { ...(requestBody.options as Record<string, unknown> ?? {}), num_ctx: 65536 };
   }
 
+  // Timeout: 15s for cloud, 60s for Ollama (local, slower)
+  const timeoutMs = provider === "ollama" ? 60000 : 15000;
   const response = await fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify(requestBody),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   // On 429, mark this key as rate-limited and cooldown 5 minutes
@@ -450,9 +631,34 @@ function isRetryableStatus(status: number): boolean {
   return status === 413 || status === 429 || status === 410 || status >= 500;
 }
 
+// ตรวจ response quality — ตรวจจับ tool_call XML leak, empty response, <think> tags
+const XML_TOOL_CALL_RE = /<tool_call>|<functioncall>|<function_calls>/i;
+const THINK_TAG_RE = /<think>[\s\S]*?<\/think>/g;
+
+function isResponseBad(content: string, hadTools: boolean): string | null {
+  if (!content && hadTools) return null; // empty content OK if tool_calls present
+  if (hadTools && XML_TOOL_CALL_RE.test(content)) {
+    return "tool_call XML leak";
+  }
+  if (content.length > 0 && content.length < 3) {
+    return "response too short";
+  }
+  return null;
+}
+
+function cleanResponseContent(content: string): string {
+  // Strip <think> blocks from reasoning models
+  return content.replace(THINK_TAG_RE, "").trim();
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as Record<string, unknown>;
+    // DEBUG: log full request structure (remove after debugging)
+    const debugKeys = Object.keys(body);
+    const toolCount = Array.isArray(body.tools) ? (body.tools as unknown[]).length : 0;
+    const msgCount = Array.isArray(body.messages) ? (body.messages as unknown[]).length : 0;
+    console.log(`[DEBUG] keys=[${debugKeys}] msgs=${msgCount} tools=${toolCount} stream=${body.stream}`);
 
     // Validate request body
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
@@ -465,6 +671,9 @@ export async function POST(req: NextRequest) {
     const modelField = (body.model as string) || "auto";
     const isStream = body.stream === true;
     const caps = detectRequestCapabilities(body);
+    const _reqTime = Date.now();
+    const _reqMsg = extractUserMessage(body)?.slice(0, 80) ?? "-";
+    console.log(`[REQ] ${modelField} | stream=${isStream} | img=${caps.hasImages} | tools=${caps.hasTools} | "${_reqMsg}"`);
 
     // Budget check — block at 95%
     const budget = checkBudget();
@@ -581,6 +790,7 @@ export async function POST(req: NextRequest) {
         return openAIError(response.status, { message: errText || `Provider ${provider} returned ${response.status}` });
       }
 
+      console.log(`[RES] ${response.status} | ${provider}/${modelId} | ${Date.now() - _reqTime}ms | direct`);
       return buildProxiedResponse(response, provider!, modelId!, isStream, estInputTokens);
     }
 
@@ -602,6 +812,7 @@ export async function POST(req: NextRequest) {
         const errText = await response.text();
         return openAIError(response.status, { message: errText || `Provider ${row.provider} returned ${response.status}` });
       }
+      console.log(`[RES] ${response.status} | ${row.provider}/${row.model_id} | ${Date.now() - _reqTime}ms | match`);
       return buildProxiedResponse(response, row.provider, row.model_id, isStream, estInputTokens);
     }
 
@@ -609,25 +820,31 @@ export async function POST(req: NextRequest) {
     // Map prompt category to benchmark category for scoring
     const benchmarkCategory = caps.hasImages ? "vision" : promptCategory;
     const candidates = selectModelsByMode(parsed.mode, caps, benchmarkCategory);
+    // DEBUG: log candidate stats
+    const candByProv: Record<string, number> = {};
+    candidates.forEach(c => candByProv[c.provider] = (candByProv[c.provider] || 0) + 1);
+    console.log(`[DEBUG] mode=${parsed.mode} candidates=${candidates.length} providers=${JSON.stringify(candByProv)}`);
 
-    // Smart routing: boost models that perform well for this prompt category
-    // Layer 1: Benchmark category scores (from exams)
-    const benchmarkBest = getBestModelsByBenchmarkCategory(benchmarkCategory);
-    if (benchmarkBest.length > 0) {
-      const bestSet = new Set(benchmarkBest);
-      const boosted = candidates.filter(c => bestSet.has(c.id));
-      const rest = candidates.filter(c => !bestSet.has(c.id));
-      candidates.splice(0, candidates.length, ...boosted, ...rest);
-    }
-    // Layer 2: Learned routing stats (from real usage)
-    const learnedBest = getBestModelsForCategory(promptCategory);
-    if (learnedBest.length > 0) {
-      const bestSet = new Set(learnedBest);
-      const boosted = candidates.filter(c => bestSet.has(c.id));
-      const rest = candidates.filter(c => !bestSet.has(c.id));
-      candidates.splice(0, candidates.length, ...boosted, ...rest);
+    // Smart routing: boost from real usage stats
+    // Skip boost for tools requests — SQL ordering (supports_tools + context_length) is more important
+    if (!caps.hasTools) {
+      const benchmarkBest = getBestModelsByBenchmarkCategory(benchmarkCategory);
+      if (benchmarkBest.length > 0) {
+        const bestSet = new Set(benchmarkBest);
+        const boosted = candidates.filter(c => bestSet.has(c.id));
+        const rest = candidates.filter(c => !bestSet.has(c.id));
+        candidates.splice(0, candidates.length, ...boosted, ...rest);
+      }
+      const learnedBest = getBestModelsForCategory(promptCategory);
+      if (learnedBest.length > 0) {
+        const bestSet = new Set(learnedBest);
+        const boosted = candidates.filter(c => bestSet.has(c.id));
+        const rest = candidates.filter(c => !bestSet.has(c.id));
+        candidates.splice(0, candidates.length, ...boosted, ...rest);
+      }
     }
 
+    console.log(`[DEBUG] after boost: candidates=${candidates.length} top3=[${candidates.slice(0,3).map(c=>c.provider+'/'+c.model_id).join(', ')}]`);
     // ถ้าไม่มี candidate → ลองไม่ filter context → ลองรวม cooldown (สุ่มเลือก ดีกว่า 503)
     let finalCandidates = candidates;
     if (finalCandidates.length === 0) {
@@ -646,41 +863,72 @@ export async function POST(req: NextRequest) {
     const startTime = Date.now();
     const userMsg = extractUserMessage(body);
     const triedProviders = new Set<string>();
+    const blockedProviders = new Set<string>(); // providers that returned 429 — skip entirely
 
-    // Weighted Load Balancing — factor in reputation (complaint history)
-    const spreadCandidates: typeof finalCandidates = [];
-    const byProvider: Record<string, typeof finalCandidates> = {};
-    for (const c of finalCandidates) {
-      (byProvider[c.provider] ??= []).push(c);
+    // Filter out in-memory provider cooldowns BEFORE retry loop
+    const activeCandidates = finalCandidates.filter(c => !isProviderCooledDown(c.provider));
+    if (activeCandidates.length > 0) {
+      finalCandidates = activeCandidates;
+      console.log(`[DEBUG] after provider-cooldown filter: ${finalCandidates.length} candidates`);
     }
-    const providerOrder = Object.entries(byProvider)
-      .map(([, models]) => {
-        const avgLat = models.reduce((s, m) => s + (m.avg_latency ?? 9999999), 0) / models.length;
-        const avgScore = models.reduce((s, m) => s + (m.avg_score ?? 0), 0) / models.length;
-        // Reputation: 0-100, models with complaints get deprioritized
-        const avgRep = models.reduce((s, m) => s + getReputationScore(m.id), 0) / models.length;
-        return { models, weight: avgScore * 1000 * (avgRep / 100) - avgLat };
-      })
-      .sort((a, b) => b.weight - a.weight);
-    // Round-robin across weighted providers
-    let hasMore = true;
-    let round = 0;
-    const totalExpected = finalCandidates.length;
-    while (hasMore && spreadCandidates.length < totalExpected) {
-      hasMore = false;
-      for (const { models: provModels } of providerOrder) {
-        if (round < provModels.length) {
-          spreadCandidates.push(provModels[round]);
-          hasMore = true;
-        }
+
+    // Weighted Load Balancing
+    let spreadCandidates: typeof finalCandidates;
+
+    if (caps.hasTools) {
+      // Tools request: ใช้ SQL ordering ตรงๆ (supports_tools + context_length DESC)
+      // แค่ดัน ollama ไว้ท้ายสุด
+      const nonOllama = finalCandidates.filter(c => c.provider !== "ollama");
+      const ollama = finalCandidates.filter(c => c.provider === "ollama");
+      spreadCandidates = [...nonOllama, ...ollama];
+    } else {
+      // Non-tools: round-robin across providers (spread load)
+      spreadCandidates = [];
+      const byProvider: Record<string, typeof finalCandidates> = {};
+      for (const c of finalCandidates) {
+        (byProvider[c.provider] ??= []).push(c);
       }
-      round++;
+      const providerOrder = Object.entries(byProvider)
+        .map(([prov, models]) => {
+          const avgLat = models.reduce((s, m) => s + (m.avg_latency ?? 9999999), 0) / models.length;
+          const avgScore = models.reduce((s, m) => s + (m.avg_score ?? 0), 0) / models.length;
+          const avgRep = models.reduce((s, m) => s + getReputationScore(m.id), 0) / models.length;
+          const weight = prov === "ollama" ? -Infinity : avgScore * 1000 * (avgRep / 100) - avgLat;
+          return { models, weight };
+        })
+        .sort((a, b) => b.weight - a.weight);
+      let hasMore = true;
+      let round = 0;
+      const totalExpected = finalCandidates.length;
+      while (hasMore && spreadCandidates.length < totalExpected) {
+        hasMore = false;
+        for (const { models: provModels } of providerOrder) {
+          if (round < provModels.length) {
+            spreadCandidates.push(provModels[round]);
+            hasMore = true;
+          }
+        }
+        round++;
+      }
     }
 
+    console.log(`[DEBUG] spread=${spreadCandidates.length} top5=[${spreadCandidates.slice(0,5).map(c=>c.provider+'/'+c.model_id).join(', ')}]`);
 
-    for (let i = 0; i < Math.min(MAX_RETRIES, spreadCandidates.length); i++) {
+    const TOTAL_TIMEOUT_MS = 30_000; // ไม่ retry เกิน 30 วินาทีรวม
+
+    for (let i = 0, tried = 0; i < spreadCandidates.length && tried < MAX_RETRIES; i++) {
+      // Total timeout — ถ้าใช้เวลารวมเกิน 30s ให้หยุด retry
+      if (Date.now() - startTime > TOTAL_TIMEOUT_MS) {
+        console.log(`[TIMEOUT] Total retry time exceeded ${TOTAL_TIMEOUT_MS}ms — stopping`);
+        break;
+      }
       const candidate = spreadCandidates[i];
       const { provider, model_id: actualModelId, id: dbModelId } = candidate;
+      // Skip providers that returned 429 (rate limited) — entire provider is throttled
+      if (blockedProviders.has(provider)) continue;
+      // Skip providers with in-memory cooldown
+      if (isProviderCooledDown(provider)) continue;
+      tried++;
       triedProviders.add(provider);
 
       try {
@@ -701,25 +949,72 @@ export async function POST(req: NextRequest) {
               db.prepare("DELETE FROM health_logs WHERE model_id = ? AND cooldown_until > datetime('now')").run(dbModelId);
             } catch { /* silent */ }
           }
-          const proxied = await buildProxiedResponse(response, provider, actualModelId, isStream, estInputTokens);
-          // Record routing success for learning
-          recordRoutingResult(dbModelId, provider, promptCategory, true, latency);
-          // Log with assistant response (extract from non-stream)
+          // Non-stream: validate content quality BEFORE returning
           if (!isStream) {
             try {
-              const cloned = proxied.clone();
-              const json = await cloned.json();
-              const assistantContent = json.choices?.[0]?.message?.content?.slice(0, 500) ?? null;
+              const cloned = response.clone();
+              const json = await cloned.json() as { choices?: Array<{ message?: { content?: string; tool_calls?: unknown[] } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+              let content = json.choices?.[0]?.message?.content ?? "";
+              const hasToolCalls = Array.isArray(json.choices?.[0]?.message?.tool_calls) && (json.choices[0].message!.tool_calls!.length > 0);
+
+              // Check for bad response (tool_call XML leak, etc.)
+              const badReason = isResponseBad(content, caps.hasTools);
+              if (badReason && !hasToolCalls) {
+                console.log(`[BAD-RESPONSE] ${provider}/${actualModelId} — ${badReason}: "${content.slice(0, 100)}"`);
+                logCooldown(dbModelId, badReason, 0, 5); // cooldown 5 min
+                recordRoutingResult(dbModelId, provider, promptCategory, false, latency);
+                lastError = `${provider}/${actualModelId}: ${badReason}`;
+                continue; // retry next model
+              }
+
+              // Clean <think> tags
+              if (content && THINK_TAG_RE.test(content)) {
+                content = cleanResponseContent(content);
+                if (json.choices?.[0]?.message) {
+                  json.choices[0].message.content = content;
+                }
+              }
+
+              // Success — log and return
               const usage = json.usage;
               logGateway(modelField, actualModelId, provider, 200, latency,
                 usage?.prompt_tokens ?? 0, usage?.completion_tokens ?? 0,
-                null, userMsg, assistantContent);
+                null, userMsg, content?.slice(0, 500) ?? null);
+              recordRoutingResult(dbModelId, provider, promptCategory, true, latency);
+
+              // Build clean response
+              const headers = new Headers();
+              headers.set("Content-Type", "application/json");
+              headers.set("X-BCProxy-Provider", provider);
+              headers.set("X-BCProxy-Model", actualModelId);
+              headers.set("Access-Control-Allow-Origin", "*");
+
+              // Normalize content arrays
+              if (json.choices) {
+                for (const choice of json.choices) {
+                  const msg = choice.message;
+                  if (msg && Array.isArray(msg.content)) {
+                    msg.content = (msg.content as Array<{ type: string; text?: string }>)
+                      .filter((p) => p.type === "text")
+                      .map((p) => p.text)
+                      .join("");
+                  }
+                }
+              }
+
+              trackTokenUsage(provider, actualModelId, usage?.prompt_tokens ?? 0, usage?.completion_tokens ?? 0);
+              console.log(`[RES] 200 | ${provider}/${actualModelId} | ${latency}ms | "${_reqMsg}"`);
+              return new Response(JSON.stringify(json), { status: 200, headers });
             } catch {
-              logGateway(modelField, actualModelId, provider, 200, latency, 0, 0, null, userMsg, null);
+              // JSON parse failed — fall through to normal proxied response
             }
-          } else {
-            logGateway(modelField, actualModelId, provider, 200, latency, 0, 0, null, userMsg, "[stream]");
           }
+
+          // Stream or fallback: just proxy through
+          const proxied = await buildProxiedResponse(response, provider, actualModelId, isStream, estInputTokens);
+          recordRoutingResult(dbModelId, provider, promptCategory, true, latency);
+          logGateway(modelField, actualModelId, provider, 200, latency, 0, 0, null, userMsg, "[stream]");
+          console.log(`[RES] 200 | ${provider}/${actualModelId} | ${latency}ms | "${_reqMsg}"`);
           return proxied;
         }
 
@@ -728,8 +1023,17 @@ export async function POST(req: NextRequest) {
         lastError = `${provider}/${actualModelId}: HTTP ${response.status}`;
         recordRoutingResult(dbModelId, provider, promptCategory, false, Date.now() - startTime);
         const st = response.status;
-        if (provider !== "ollama" && (st === 429 || st === 413 || st === 422 || st === 410 || st >= 500 || st === 401 || st === 403)) {
+        console.log(`[RETRY] ${tried}/${MAX_RETRIES} | ${provider}/${actualModelId} → HTTP ${st} | ${errText.slice(0, 200)}`);
+        if (provider !== "ollama" && (st === 400 || st === 429 || st === 413 || st === 422 || st === 410 || st === 404 || st >= 500 || st === 401 || st === 403)) {
           logCooldown(dbModelId, `HTTP ${st}: ${errText}`, st);
+          // Cooldown เฉพาะ model ที่ fail — ไม่ cooldown ทั้ง provider
+          // blockedProviders ใช้แค่ภายใน request นี้ สำหรับ 429/401/403
+          if (st === 429 || st === 401 || st === 403) {
+            blockedProviders.add(provider); // skip provider ใน request นี้เท่านั้น
+          }
+          if (st === 404) {
+            blockedProviders.add(provider);
+          }
           if (st === 410) {
             emitEvent("provider_error", `${provider}/${actualModelId} ถูกถอดแล้ว (HTTP 410 Gone)`, errText.slice(0, 200), provider, actualModelId, "error");
           } else if (st >= 500) {
@@ -750,6 +1054,7 @@ export async function POST(req: NextRequest) {
     // All retries exhausted
     const latency = Date.now() - startTime;
     logGateway(modelField, null, null, 503, latency, 0, 0, lastError.slice(0, 300), userMsg, null);
+    console.log(`[RES] 503 | ${triedProviders.size} providers tried, ${blockedProviders.size} blocked | ${latency}ms | ${lastError.slice(0, 120)}`);
     return openAIError(503, {
       message: `All ${Math.min(MAX_RETRIES, spreadCandidates.length)} models from ${triedProviders.size} providers failed: ${lastError}`,
     });
@@ -833,6 +1138,19 @@ async function buildProxiedResponse(
               } catch { /* keep original */ }
             }
           }
+        }
+      }
+    }
+
+    // Normalize content: some providers return array [{type:"text",text:"..."}] instead of string
+    if (json.choices) {
+      for (const choice of json.choices) {
+        const msg = choice.message;
+        if (msg && Array.isArray(msg.content)) {
+          msg.content = msg.content
+            .filter((p: { type: string }) => p.type === "text")
+            .map((p: { text: string }) => p.text)
+            .join("");
         }
       }
     }

@@ -200,4 +200,25 @@ function initSchema(db: Database.Database) {
   if (!hasCategory) {
     db.exec(`ALTER TABLE benchmark_results ADD COLUMN category TEXT DEFAULT 'general'`);
   }
+
+  // Migration: add capability columns to models table
+  const modelCols = db.prepare("PRAGMA table_info(models)").all() as { name: string }[];
+  const existingCols = new Set(modelCols.map(c => c.name));
+  const newCaps: [string, string][] = [
+    ["supports_audio_input", "INTEGER DEFAULT 0"],   // รับเสียง (speech-to-text)
+    ["supports_audio_output", "INTEGER DEFAULT 0"],  // สร้างเสียง (text-to-speech)
+    ["supports_image_gen", "INTEGER DEFAULT 0"],     // สร้างรูป
+    ["supports_embedding", "INTEGER DEFAULT 0"],     // embedding
+    ["supports_json_mode", "INTEGER DEFAULT 0"],     // JSON structured output
+    ["supports_reasoning", "INTEGER DEFAULT 0"],     // reasoning/thinking (R1, o1)
+    ["supports_code", "INTEGER DEFAULT 0"],          // code generation (codestral, etc)
+    ["max_output_tokens", "INTEGER DEFAULT 0"],      // max output tokens
+    ["pricing_input", "REAL DEFAULT 0"],             // $/M input tokens
+    ["pricing_output", "REAL DEFAULT 0"],            // $/M output tokens
+  ];
+  for (const [col, def] of newCaps) {
+    if (!existingCols.has(col)) {
+      db.exec(`ALTER TABLE models ADD COLUMN ${col} ${def}`);
+    }
+  }
 }

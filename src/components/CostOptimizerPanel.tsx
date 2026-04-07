@@ -19,7 +19,6 @@ interface ModelUsage {
   total_input: number;
   total_output: number;
   requests: number;
-  benchmark_score: number;
 }
 
 interface Suggestion {
@@ -172,11 +171,6 @@ export function CostOptimizerPanel() {
                   </div>
                   <div className="text-right shrink-0">
                     <div className="text-gray-300">{fmtTokens(total)}</div>
-                    {m.benchmark_score > 0 && (
-                      <div className={`text-[10px] ${m.benchmark_score >= 5 ? "text-emerald-400" : "text-red-400"}`}>
-                        {m.benchmark_score.toFixed(1)}/10
-                      </div>
-                    )}
                   </div>
                 </div>
               );

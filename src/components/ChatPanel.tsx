@@ -122,12 +122,6 @@ export function ChatPanel({ availableModels }: { availableModels: ModelData[] })
             <span className={provColor.text}>{selectedModel.provider}</span>
             <span>·</span>
             <span>{fmtCtx(selectedModel.contextLength)} ctx</span>
-            {selectedModel.benchmark && (
-              <>
-                <span>·</span>
-                <span className="text-indigo-300">{selectedModel.benchmark.avgScore.toFixed(1)}/10</span>
-              </>
-            )}
           </div>
         )}
       </div>

@@ -114,13 +114,8 @@ export async function runWorkerCycle(): Promise<void> {
     logWorker("worker", `Step 2 (health) failed: ${err}`, "error");
   }
 
-  try {
-    // Step 3: Benchmark
-    logWorker("worker", "Step 3: Benchmark");
-    benchmarkResult = await runBenchmarks();
-  } catch (err) {
-    logWorker("worker", `Step 3 (benchmark) failed: ${err}`, "error");
-  }
+  // Step 3: Benchmark — DISABLED (วัดจากการทำงานจริงแทน)
+  // benchmarkResult = await runBenchmarks();
 
   setState("status", "idle");
   setState(

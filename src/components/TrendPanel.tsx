@@ -9,6 +9,7 @@ interface TrendData {
   complaintTrend: { date: string; provider: string; complaints: number; failed_exams: number }[];
   latencyTrend: { date: string; provider: string; avg_latency: number; requests: number }[];
 }
+// benchmarkTrend kept for API compatibility but not displayed
 
 const PROVIDER_HEX: Record<string, string> = {
   openrouter: "#3b82f6", kilo: "#a855f7", google: "#34d399", groq: "#fb923c",
@@ -18,7 +19,7 @@ const PROVIDER_HEX: Record<string, string> = {
 export function TrendPanel() {
   const [data, setData] = useState<TrendData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<"benchmark" | "complaint" | "latency">("benchmark");
+  const [view, setView] = useState<"complaint" | "latency">("latency");
 
   const fetchData = useCallback(async () => {
     try {
@@ -37,16 +38,15 @@ export function TrendPanel() {
   if (loading) return <div className="text-gray-500 text-center py-8">กำลังโหลดแนวโน้ม...</div>;
   if (!data) return null;
 
-  const { dates, benchmarkTrend, complaintTrend, latencyTrend } = data;
+  const { dates, complaintTrend, latencyTrend } = data;
 
   // Get unique providers
   const allProviders = [...new Set([
-    ...benchmarkTrend.map(b => b.provider),
     ...complaintTrend.map(c => c.provider),
     ...latencyTrend.map(l => l.provider),
   ])];
 
-  const hasData = benchmarkTrend.length > 0 || complaintTrend.length > 0 || latencyTrend.length > 0;
+  const hasData = complaintTrend.length > 0 || latencyTrend.length > 0;
   if (!hasData) {
     return (
       <div className="glass rounded-2xl p-8 text-center text-gray-500">
@@ -61,7 +61,6 @@ export function TrendPanel() {
       {/* View Tabs */}
       <div className="flex gap-2">
         {([
-          ["benchmark", "คะแนนสอบ"],
           ["complaint", "ใบเตือน"],
           ["latency", "วิ่งเร็วแค่ไหน"],
         ] as const).map(([id, label]) => (
@@ -79,20 +78,6 @@ export function TrendPanel() {
 
       {/* Chart Area */}
       <div className="glass rounded-xl p-5">
-        {view === "benchmark" && (
-          <TrendChart
-            title="คะแนน Benchmark เฉลี่ย (14 วัน)"
-            dates={dates}
-            providers={allProviders}
-            getData={(date, provider) => {
-              const row = benchmarkTrend.find(b => b.date === date && b.provider === provider);
-              return row ? row.avg_score : null;
-            }}
-            maxValue={10}
-            formatValue={(v) => `${v.toFixed(1)}/10`}
-            color="score"
-          />
-        )}
         {view === "complaint" && (
           <TrendChart
             title="จำนวนร้องเรียน (14 วัน)"

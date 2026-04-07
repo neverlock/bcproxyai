@@ -27,17 +27,23 @@ export async function GET() {
   try {
     const db = getDb();
 
-    // Count models per provider
+    // Count models per provider.
+    // A model is considered available if:
+    //   1. It has NO health_log entry at all (never checked → assume online), OR
+    //   2. Its latest health_log has status='available' AND no active cooldown
+    // A model is offline only when it has an active cooldown (cooldown_until > now).
+    // Simple: model is available unless it has an active cooldown
+    // No health_log = available (default online)
     const rows = db.prepare(`
-      SELECT provider, COUNT(*) as model_count,
-        SUM(CASE WHEN id IN (
+      SELECT m.provider, COUNT(*) as model_count,
+        SUM(CASE WHEN m.id NOT IN (
           SELECT h.model_id FROM health_logs h
-          INNER JOIN (SELECT model_id, MAX(checked_at) as mc FROM health_logs GROUP BY model_id) l
-            ON h.model_id = l.model_id AND h.checked_at = l.mc
-          WHERE h.status = 'available' AND (h.cooldown_until IS NULL OR h.cooldown_until <= datetime('now'))
+          INNER JOIN (SELECT model_id, MAX(id) as max_id FROM health_logs GROUP BY model_id) l
+            ON h.model_id = l.model_id AND h.id = l.max_id
+          WHERE h.cooldown_until > datetime('now')
         ) THEN 1 ELSE 0 END) as available_count
-      FROM models
-      GROUP BY provider
+      FROM models m
+      GROUP BY m.provider
     `).all() as { provider: string; model_count: number; available_count: number }[];
 
     const dbMap = new Map(rows.map(r => [r.provider, r]));

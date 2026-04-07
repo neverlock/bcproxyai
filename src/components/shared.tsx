@@ -14,8 +14,6 @@ export interface Stats {
   totalModels: number;
   availableModels: number;
   cooldownModels: number;
-  benchmarkedModels: number;
-  avgScore: number;
 }
 
 export interface WorkerLog {
@@ -52,13 +50,6 @@ export interface HealthInfo {
   cooldownUntil: string | null;
 }
 
-export interface BenchmarkInfo {
-  avgScore: number;
-  maxScore: number;
-  questionsAnswered: number;
-  totalQuestions: number;
-}
-
 export interface ModelData {
   id: string;
   name: string;
@@ -70,7 +61,6 @@ export interface ModelData {
   supportsVision: boolean;
   supportsTools: boolean;
   health: HealthInfo;
-  benchmark: BenchmarkInfo | null;
   firstSeen: string;
   lastSeen: string;
 }

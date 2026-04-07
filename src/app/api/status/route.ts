@@ -31,31 +31,26 @@ export async function GET() {
       .prepare("SELECT COUNT(*) as count FROM models")
       .get() as { count: number };
 
-    // Available models: latest health_log status='available' and no active cooldown
+    // Available = total - cooldown (no health_log = available by default)
     const availableRow = db
       .prepare(`
-        SELECT COUNT(DISTINCT h.model_id) as count
-        FROM health_logs h
-        INNER JOIN (
-          SELECT model_id, MAX(checked_at) as max_checked
-          FROM health_logs
-          GROUP BY model_id
-        ) latest ON h.model_id = latest.model_id AND h.checked_at = latest.max_checked
-        WHERE h.status = 'available'
-          AND (h.cooldown_until IS NULL OR h.cooldown_until <= datetime('now'))
+        SELECT COUNT(*) as count FROM models
+        WHERE id NOT IN (
+          SELECT h.model_id FROM health_logs h
+          INNER JOIN (SELECT model_id, MAX(id) as max_id FROM health_logs GROUP BY model_id) l
+            ON h.model_id = l.model_id AND h.id = l.max_id
+          WHERE h.cooldown_until > datetime('now')
+        )
       `)
       .get() as { count: number };
 
-    // Cooldown models
+    // Cooldown models (active cooldown only)
     const cooldownRow = db
       .prepare(`
         SELECT COUNT(DISTINCT h.model_id) as count
         FROM health_logs h
-        INNER JOIN (
-          SELECT model_id, MAX(checked_at) as max_checked
-          FROM health_logs
-          GROUP BY model_id
-        ) latest ON h.model_id = latest.model_id AND h.checked_at = latest.max_checked
+        INNER JOIN (SELECT model_id, MAX(id) as max_id FROM health_logs GROUP BY model_id) l
+          ON h.model_id = l.model_id AND h.id = l.max_id
         WHERE h.cooldown_until > datetime('now')
       `)
       .get() as { count: number };
