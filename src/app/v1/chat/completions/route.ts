@@ -8,6 +8,8 @@ import { openAIError, ensureChatCompletionFields } from "@/lib/openai-compat";
 import { autoDetectComplaint } from "@/lib/auto-complaint";
 import { getReputationScore } from "@/lib/worker/complaint";
 import { detectPromptCategory, recordRoutingResult, getBestModelsForCategory, getBestModelsByBenchmarkCategory, emitEvent } from "@/lib/routing-learn";
+import { getRedis } from "@/lib/redis";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -61,49 +63,77 @@ interface ModelRow {
   cooldown_until: string | null;
 }
 
-// ─── In-Memory Provider Cooldown (fallback) ───
-const providerCooldowns = new Map<string, { until: number; reason: string }>();
-
-function isProviderCooledDownMem(provider: string): boolean {
-  const cd = providerCooldowns.get(provider);
-  if (!cd) return false;
-  if (Date.now() > cd.until) {
-    providerCooldowns.delete(provider);
-    return false;
-  }
-  return true;
-}
-
-function setProviderCooldownMem(provider: string, ms: number, reason: string) {
-  providerCooldowns.set(provider, { until: Date.now() + ms, reason });
-  console.log(`[COOLDOWN] ${provider} → ${Math.round(ms / 60000)}min | ${reason}`);
-}
-
-const providerFailures = new Map<string, { count: number; firstAt: number }>();
+// ─── Redis-backed Provider Cooldown (in-memory fallback) ───
+const _memCooldowns = new Map<string, { until: number; reason: string }>();
+const _memFailures = new Map<string, { count: number; firstAt: number }>();
 const FAILURE_STREAK_THRESHOLD = 5;
 const FAILURE_STREAK_WINDOW_MS = 2 * 60 * 1000;
 const STREAK_COOLDOWN_MS = 30 * 60 * 1000;
 
-function recordProviderFailureMem(provider: string) {
-  const now = Date.now();
-  const entry = providerFailures.get(provider);
-  if (!entry || now - entry.firstAt > FAILURE_STREAK_WINDOW_MS) {
-    providerFailures.set(provider, { count: 1, firstAt: now });
-    return;
-  }
-  entry.count += 1;
-  if (entry.count >= FAILURE_STREAK_THRESHOLD) {
-    setProviderCooldownMem(
-      provider,
-      STREAK_COOLDOWN_MS,
-      `failure streak: ${entry.count} fails in ${Math.round((now - entry.firstAt) / 1000)}s`,
-    );
-    providerFailures.delete(provider);
+async function isProviderCooledDownMem(provider: string): Promise<boolean> {
+  // Try Redis first
+  try {
+    const redis = getRedis();
+    const val = await redis.get(`cd:provider:${provider}`);
+    if (val !== null) return true;
+  } catch { /* fall through */ }
+  // Fallback: in-memory
+  const cd = _memCooldowns.get(provider);
+  if (!cd) return false;
+  if (Date.now() > cd.until) { _memCooldowns.delete(provider); return false; }
+  return true;
+}
+
+async function setProviderCooldownMem(provider: string, ms: number, reason: string): Promise<void> {
+  console.log(`[COOLDOWN] ${provider} → ${Math.round(ms / 60000)}min | ${reason}`);
+  try {
+    const redis = getRedis();
+    await redis.set(`cd:provider:${provider}`, reason, "PX", ms);
+  } catch {
+    // Fallback: in-memory
+    _memCooldowns.set(provider, { until: Date.now() + ms, reason });
   }
 }
 
-function recordProviderSuccessMem(provider: string) {
-  providerFailures.delete(provider);
+async function recordProviderFailureMem(provider: string): Promise<void> {
+  try {
+    const redis = getRedis();
+    const key = `fs:provider:${provider}`;
+    const raw = await redis.get(key);
+    const now = Date.now();
+    const entry = raw ? JSON.parse(raw) as { count: number; firstAt: number } : null;
+    if (!entry || now - entry.firstAt > FAILURE_STREAK_WINDOW_MS) {
+      await redis.set(key, JSON.stringify({ count: 1, firstAt: now }), "PX", FAILURE_STREAK_WINDOW_MS);
+      return;
+    }
+    entry.count += 1;
+    if (entry.count >= FAILURE_STREAK_THRESHOLD) {
+      await setProviderCooldownMem(provider, STREAK_COOLDOWN_MS, `failure streak: ${entry.count} fails in ${Math.round((now - entry.firstAt) / 1000)}s`);
+      await redis.del(key);
+    } else {
+      await redis.set(key, JSON.stringify(entry), "PX", FAILURE_STREAK_WINDOW_MS);
+    }
+  } catch {
+    // Fallback: in-memory
+    const now = Date.now();
+    const entry = _memFailures.get(provider);
+    if (!entry || now - entry.firstAt > FAILURE_STREAK_WINDOW_MS) {
+      _memFailures.set(provider, { count: 1, firstAt: now });
+      return;
+    }
+    entry.count += 1;
+    if (entry.count >= FAILURE_STREAK_THRESHOLD) {
+      await setProviderCooldownMem(provider, STREAK_COOLDOWN_MS, `failure streak: ${entry.count}`);
+      _memFailures.delete(provider);
+    }
+  }
+}
+
+async function recordProviderSuccessMem(provider: string): Promise<void> {
+  try {
+    await getRedis().del(`fs:provider:${provider}`);
+  } catch { /* ignore */ }
+  _memFailures.delete(provider);
 }
 
 interface RequestCapabilities {
@@ -272,13 +302,13 @@ async function logCooldown(modelId: string, errorMsg: string, httpStatus = 0, ov
   }
 }
 
-function cooldownProvider(provider: string, httpStatus: number, errorMsg: string) {
+async function cooldownProvider(provider: string, httpStatus: number, errorMsg: string): Promise<void> {
   let cooldownMs: number;
   if (httpStatus === 402) cooldownMs = 24 * 60 * 60 * 1000;
   else if (httpStatus === 429) cooldownMs = 5 * 60 * 1000;
   else if (httpStatus === 401 || httpStatus === 403) cooldownMs = 60 * 60 * 1000;
   else cooldownMs = 5 * 60 * 1000;
-  setProviderCooldownMem(provider, cooldownMs, `HTTP ${httpStatus}: ${errorMsg}`);
+  await setProviderCooldownMem(provider, cooldownMs, `HTTP ${httpStatus}: ${errorMsg}`);
 }
 
 function parseModelField(model: string): {
@@ -571,6 +601,27 @@ export async function POST(req: NextRequest) {
     const _reqMsg = extractUserMessage(body)?.slice(0, 80) ?? "-";
     console.log(`[REQ] ${modelField} | stream=${isStream} | img=${caps.hasImages} | tools=${caps.hasTools} | "${_reqMsg}"`);
 
+    // Rate limiting — 100 req/60s per IP
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+      ?? req.headers.get("x-real-ip")
+      ?? "unknown";
+    const rl = await checkRateLimit(`chat:${ip}`, 100, 60);
+    if (!rl.allowed) {
+      return new Response(
+        JSON.stringify({ error: { message: "Rate limit exceeded. Try again in a moment.", type: "rate_limit_exceeded", code: "rate_limit_exceeded" } }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "X-RateLimit-Limit": "100",
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": String(Math.floor(Date.now() / 1000) + rl.resetIn),
+            "Access-Control-Allow-Origin": "*",
+          },
+        }
+      );
+    }
+
     // Budget check — block at 95%
     const budget = await checkBudget();
     if (!budget.ok) {
@@ -730,8 +781,9 @@ export async function POST(req: NextRequest) {
     const triedProviders = new Set<string>();
     const blockedProviders = new Set<string>();
 
-    // Filter out in-memory provider cooldowns BEFORE retry loop
-    const activeCandidates = finalCandidates.filter(c => !isProviderCooledDownMem(c.provider));
+    // Filter out provider cooldowns BEFORE retry loop (async Redis check)
+    const cooldownChecks = await Promise.all(finalCandidates.map(c => isProviderCooledDownMem(c.provider)));
+    const activeCandidates = finalCandidates.filter((_, i) => !cooldownChecks[i]);
     if (activeCandidates.length > 0) {
       finalCandidates = activeCandidates;
       console.log(`[DEBUG] after provider-cooldown filter: ${finalCandidates.length} candidates`);
@@ -788,7 +840,7 @@ export async function POST(req: NextRequest) {
       const candidate = spreadCandidates[i];
       const { provider, model_id: actualModelId, id: dbModelId } = candidate;
       if (blockedProviders.has(provider)) continue;
-      if (isProviderCooledDownMem(provider)) continue;
+      if (await isProviderCooledDownMem(provider)) continue;
       tried++;
       triedProviders.add(provider);
 
@@ -797,7 +849,7 @@ export async function POST(req: NextRequest) {
 
         if (response.ok) {
           const latency = Date.now() - startTime;
-          recordProviderSuccessMem(provider);
+          await recordProviderSuccessMem(provider);
           const SLOW_THRESHOLD_MS = 30_000;
           const SLOW_COOLDOWN_MINUTES = 15;
           if (latency > SLOW_THRESHOLD_MS && provider !== "ollama") {
@@ -870,13 +922,13 @@ export async function POST(req: NextRequest) {
         const errText = await response.text().catch(() => "");
         lastError = `${provider}/${actualModelId}: HTTP ${response.status}`;
         await recordRoutingResult(dbModelId, provider, promptCategory, false, Date.now() - startTime);
-        recordProviderFailureMem(provider);
+        await recordProviderFailureMem(provider);
         const st = response.status;
         console.log(`[RETRY] ${tried}/${MAX_RETRIES} | ${provider}/${actualModelId} → HTTP ${st} | ${errText.slice(0, 200)}`);
         if (provider !== "ollama" && (st === 400 || st === 402 || st === 429 || st === 413 || st === 422 || st === 410 || st === 404 || st >= 500 || st === 401 || st === 403)) {
           await logCooldown(dbModelId, `HTTP ${st}: ${errText}`, st);
           if (st === 402) {
-            cooldownProvider(provider, st, errText.slice(0, 200));
+            await cooldownProvider(provider, st, errText.slice(0, 200));
             blockedProviders.add(provider);
             await emitEvent("provider_error", `${provider} quota หมด (HTTP 402)`, errText.slice(0, 200), provider, actualModelId, "error");
           }
@@ -893,7 +945,7 @@ export async function POST(req: NextRequest) {
         lastError = `${provider}/${actualModelId}: ${String(err)}`;
         await logCooldown(dbModelId, lastError);
         await recordRoutingResult(dbModelId, provider, promptCategory, false, Date.now() - startTime);
-        recordProviderFailureMem(provider);
+        await recordProviderFailureMem(provider);
         await emitEvent("provider_error", `${provider} เชื่อมต่อไม่ได้`, String(err).slice(0, 200), provider, actualModelId, "warn");
         continue;
       }
