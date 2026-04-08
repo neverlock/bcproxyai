@@ -706,8 +706,14 @@ export async function POST(req: NextRequest) {
     console.log(`[REQ] ${modelField} | stream=${isStream} | img=${caps.hasImages} | tools=${caps.hasTools} | "${_reqMsg}"`);
 
     // Rate limiting — 100 req/60s per IP
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-      ?? req.headers.get("x-real-ip")
+    // Caddy sets X-Real-IP and X-Forwarded-For to exactly the true client IP
+    // (trusted_proxies + header_up override in caddy-docker.Caddyfile). We
+    // prefer X-Real-IP because it's a single value with no chain, and fall
+    // back to the LAST entry of X-Forwarded-For (right-most = closest to us)
+    // just in case the deployment sits behind another proxy someday.
+    const xffChain = req.headers.get("x-forwarded-for")?.split(",").map(s => s.trim()).filter(Boolean) ?? [];
+    const ip = req.headers.get("x-real-ip")?.trim()
+      ?? xffChain[xffChain.length - 1]
       ?? "unknown";
     const rl = await checkRateLimit(`chat:${ip}`, 100, 60);
     if (!rl.allowed) {
