@@ -15,10 +15,14 @@ When writing/rewriting README.md, AGENTS.md, or any docs file: describe ONLY wha
 ## Port map (do not confuse)
 | Port | Service |
 |------|---------|
-| 3333 | BCProxyAI via Caddy (300s timeout) |
-| 3334 | BCProxyAI direct (Docker) |
+| 3333 | BCProxyAI via external Caddy (300s timeout) |
+| 3334 | BCProxyAI via in-compose Caddy (load balanced) |
+| 5434 | Postgres (bcproxyai compose service) |
+| 6382 | Redis (bcproxyai compose service) |
 | 18790 | OpenClaw via Caddy (600s timeout) |
 | 18791 | OpenClaw direct (Docker) |
+
+The bcproxyai container exposes only internal port 3000; host traffic routes through the in-compose `caddy` service. Scale with `docker compose up -d --scale bcproxyai=N`.
 
 ## Deploy workflow
 ```bash

@@ -1,480 +1,191 @@
-# BCProxyAI 🦐
+# BCProxyAI
 
-> **AI Gateway อัจฉริยะ** — รวม AI ฟรีจาก 13 ผู้ให้บริการ 200+ โมเดล ไว้ในที่เดียว
-> ใช้ผ่าน **OpenAI-compatible API** — เปลี่ยนแค่ `base_url` ก็ใช้ได้ทันที
+An OpenAI-compatible LLM gateway that aggregates free-tier models from multiple providers, with automatic routing, health monitoring, and benchmarking.
 
-โรงเรียน AI ที่มี **น้องกุ้ง 🦐** และ **OpenClaw 🦞** เป็นมาสคอต — คัดเด็กเก่งให้คุณอัตโนมัติ ผ่านระบบสอบ ใบเตือน และ smart routing แบบ real-time
+## Stack
 
----
+| Layer | Tech |
+|-------|------|
+| Framework | Next.js 16.2.2 (App Router, Node.js) |
+| UI | React 19.2.4 + Tailwind CSS v4 |
+| Language | TypeScript 5 |
+| Database | PostgreSQL 17 (via `postgres` driver + drizzle-orm) |
+| Cache / State | Redis 7 (ioredis) |
+| Reverse Proxy | Caddy 2 (in-compose) |
+| Scheduler | node-cron |
+| Testing | Vitest |
 
-## สารบัญ
+## Services
 
-- [ฟีเจอร์เด่น](#ฟีเจอร์เด่น)
-- [Tech Stack](#tech-stack)
-- [Quick Start](#quick-start)
-- [Environment Variables](#environment-variables)
-- [Providers ที่รองรับ](#providers-ที่รองรับ-13-ตัว)
-- [Dashboard Sections](#dashboard-sections)
-- [API Endpoints](#api-endpoints)
-- [Background Worker](#background-worker)
-- [Database Schema](#database-schema)
-- [Caddy Reverse Proxy](#caddy-reverse-proxy)
-- [OpenClaw Integration](#openclaw-integration)
-- [Project Structure](#project-structure)
-- [Testing](#testing)
+| Container | Role | Port |
+|-----------|------|------|
+| `bcproxyai` | Next.js app | internal :3000 |
+| `caddy` | Reverse proxy + load balancer | **3334** → bcproxyai:3000 |
+| `postgres` | Database | 5434 (host), 5432 (internal) |
+| `redis` | Cooldowns, rate limits, state | 6382 (host), 6379 (internal) |
 
----
+## Port map
 
-## ฟีเจอร์เด่น
+| Port | Service |
+|------|---------|
+| 3333 | BCProxyAI via external Caddy (300s timeout) |
+| 3334 | BCProxyAI via in-compose Caddy |
+| 18790 | OpenClaw via Caddy (600s timeout) |
+| 18791 | OpenClaw direct |
 
-- 🎯 **Smart Routing** — เลือก provider/model ที่เหมาะกับ prompt อัตโนมัติ ตามประเภทคำถาม (coding/translation/reasoning/general)
-- 🏥 **Health Monitoring** — ping ทุก provider ทุกชั่วโมง, cooldown 15 นาที เมื่อ fail
-- ⚔️ **Battle Theater** — แบนเนอร์ Thai Matrix + ฝนตัวอักษรไทย + พระเอก 🦸 vs ผู้ร้าย 👿 สู้กันตาม event จริง พร้อม damage numbers, battle cry, shockwave, speed lines
-- 🎒 **School Roster** — นักเรียนใหม่ย้ายมา · โดดเรียน · ลาออก · โดนไล่ออก (แยกตามช่วงเวลาหายตัว)
-- 🗓️ **Score Heatmap** — ตารางเกรด provider × วัน 14 วัน, สีบอกระดับทันที
-- 🏆 **Leaderboard** — อันดับ provider พร้อม animation count-up + medal
-- 📈 **Stacked Area** — สัดส่วน traffic per provider per day
-- 🛎️ **School Bell** — event stream แบบ real-time แจ้ง provider down/recovered
-- 💸 **Cost Optimizer** — token budget + forecast รายวัน
-- ⚠️ **Auto Complaint** — ตรวจจับคำตอบแย่อัตโนมัติแล้ว retest
-- 📚 **Gateway Logs** — audit trail ของ request/response ทุกครั้ง
-- 🐳 **Docker Ready** — ไฟล์เดียว `docker compose up -d` เสร็จเลย
-
----
-
-## Tech Stack
-
-| Layer | Tech | Version |
-|-------|------|---------|
-| Framework | Next.js | 16.2.2 (App Router) |
-| UI | React | 19.2.4 |
-| Styling | Tailwind CSS | v4 |
-| Language | TypeScript | 5.x |
-| Database | SQLite (better-sqlite3) | 12.8.0 |
-| AI SDKs | @ai-sdk/openai, @anthropic-ai/sdk, @modelcontextprotocol/sdk | latest |
-| Scheduler | node-cron | 4.2.1 |
-| Testing | Vitest | 4.1.2 |
-| Runtime | Node.js | 20-alpine (Docker) |
-| Reverse Proxy | Caddy | (host-side) |
-| Package Manager | npm | — |
-
----
-
-## Quick Start
-
-### Docker (แนะนำ)
+## Quick start
 
 ```bash
-# 1. clone + เข้าโฟลเดอร์
-git clone https://github.com/jaturapornchai/bcproxyai.git
-cd bcproxyai
-
-# 2. สร้างไฟล์ .env.local แล้วใส่ API keys (ดูหัวข้อ Environment Variables)
-cp .env.example .env.local
-# แก้ไข .env.local
-
-# 3. start
+cp .env.example .env.local   # add provider API keys
 docker compose up -d --build
-
-# 4. เปิด browser
-open http://localhost:3334
+curl http://localhost:3334/api/health
 ```
 
-หลัง start แล้ว:
-- **Direct**: `http://localhost:3334` (port ของ container)
-- **ผ่าน Caddy**: `http://localhost:3333` (ถ้ารัน Caddy ด้วย)
-- **OpenAI base URL**: `http://localhost:3334/v1`
+Dashboard: `http://localhost:3334`
 
-### Local Development (ไม่ใช้ Docker)
+OpenAI base URL: `http://localhost:3334/v1`
+
+## Deploy workflow
 
 ```bash
-npm install
-npm run dev          # dev server ที่ http://localhost:3000
-npm run build        # production build
-npm start            # run production
-npm test             # vitest
-npm test:watch       # vitest watch mode
+rtk npx next build                   # verify 0 errors
+rtk docker compose up -d --build
+sleep 5 && curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3334/
 ```
 
----
+Container name: `bcproxyai-bcproxyai-1`
 
-## Environment Variables
-
-ไฟล์: `.env.local` (อย่า commit เข้า git)
-
-### จำเป็น
+## Horizontal scaling
 
 ```bash
-OPENROUTER_API_KEY=sk-or-v1-xxxxx     # https://openrouter.ai (ฟรี)
-GROQ_API_KEY=gsk_xxxxx                # https://console.groq.com (ฟรี)
+docker compose up -d --scale bcproxyai=2
 ```
 
-### ตัวเลือก (ใส่เพิ่มได้ตามต้องการ)
+Caddy load-balances across all healthy instances with round-robin and `/api/health` checks.
+
+## Environment variables
+
+Set in `.env.local` (picked up by `env_file` in compose):
 
 ```bash
-GOOGLE_AI_API_KEY=xxxxx               # https://aistudio.google.com (ฟรี)
-CEREBRAS_API_KEY=csk-xxxxx            # https://cloud.cerebras.ai (ฟรี)
-SAMBANOVA_API_KEY=xxxxx               # https://cloud.sambanova.ai (ฟรี)
-MISTRAL_API_KEY=xxxxx                 # https://mistral.ai (ฟรี ต้อง verify เบอร์)
-KILO_API_KEY=xxxxx                    # https://kilo.ai
-GITHUB_API_KEY=ghp_xxxxx              # GitHub Models
-FIREWORKS_API_KEY=xxxxx               # https://fireworks.ai
-COHERE_API_KEY=xxxxx                  # https://cohere.com
-HF_API_KEY=hf_xxxxx                   # https://huggingface.co
-CLOUDFLARE_ACCOUNT_ID=xxxxx           # Cloudflare Workers AI
-CLOUDFLARE_API_KEY=xxxxx
-DEEPSEEK_API_KEY=xxxxx                # ใช้เป็น judge ตอน benchmark (ถูกมาก)
-
-# Local Ollama (ไม่ต้องตั้งถ้าใช้ default)
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_API_KEY=ollama
+OPENROUTER_API_KEY=sk-or-v1-...
+GROQ_API_KEY=gsk_...
+GOOGLE_AI_API_KEY=...
+CEREBRAS_API_KEY=csk-...
+SAMBANOVA_API_KEY=...
+MISTRAL_API_KEY=...
+KILO_API_KEY=...
+GITHUB_API_KEY=ghp_...
+FIREWORKS_API_KEY=...
+COHERE_API_KEY=...
+HF_API_KEY=hf_...
+CLOUDFLARE_ACCOUNT_ID=...
+CLOUDFLARE_API_KEY=...
+OLLAMA_BASE_URL=http://localhost:11434   # optional, defaults to this
 ```
 
-ระบบจะ detect อัตโนมัติว่า provider ไหนพร้อมใช้ — ไม่ใส่ key ก็ข้ามไป ไม่ error
+`DATABASE_URL` and `REDIS_URL` are injected by docker-compose and do not need to be in `.env.local`.
 
----
+Provider API keys can also be managed at runtime via `/api/setup`.
 
-## Providers ที่รองรับ (13 ตัว)
+## Supported providers (13)
 
-| # | Provider | Endpoint | หมายเหตุ |
-|---|----------|----------|----------|
-| 1 | **OpenRouter** | `openrouter.ai/api/v1` | embeddings + legacy completions |
-| 2 | **Groq** | `api.groq.com/openai/v1` | inference เร็วมาก |
-| 3 | **Google AI** | `generativelanguage.googleapis.com/v1beta/openai` | Gemini, มี free tier |
-| 4 | **Mistral** | `api.mistral.ai/v1` | embeddings |
-| 5 | **Cerebras** | `api.cerebras.ai/v1` | free credits |
-| 6 | **SambaNova** | `api.sambanova.ai/v1` | high throughput |
-| 7 | **Kilo** | `api.kilo.ai/api/gateway` | aggregator |
-| 8 | **Ollama** | `localhost:11434/v1` | local LLM |
-| 9 | **GitHub Models** | `models.github.ai/inference` | ใช้ GitHub token |
-| 10 | **Fireworks** | `api.fireworks.ai/inference/v1` | serverless |
-| 11 | **Cohere** | `api.cohere.com/v2` | Command models |
-| 12 | **Cloudflare Workers AI** | `api.cloudflare.com/.../ai/v1` | edge inference |
-| 13 | **Hugging Face** | `router.huggingface.co/v1` | HF Inference API |
+OpenRouter, Groq, Google AI, Mistral, Cerebras, SambaNova, Kilo, Ollama, GitHub Models, Fireworks, Cohere, Cloudflare Workers AI, Hugging Face.
 
----
+## OpenAI-compatible endpoints
 
-## Dashboard Sections
+```
+POST /v1/chat/completions     Smart-routed chat completions
+GET  /v1/models               List all available models
+GET  /v1/models/:model        Get a specific model
+POST /v1/completions          Legacy text completions
+POST /v1/embeddings           Text embeddings
+POST /v1/images/generations   Image generation
+POST /v1/audio/*              Audio (TTS, STT, translation)
+POST /v1/moderations          Content moderation
+```
 
-หน้า `/` ประกอบด้วย 12 sections (อ้างอิงจาก [src/app/page.tsx](src/app/page.tsx)):
+### Virtual routing models
 
-| # | Section ID | ชื่อ | คำอธิบาย |
-|---|------------|------|----------|
-| — | (top) | ⚔️ **Battle Theater** | Thai Matrix digital rain + พระเอก 🦸 vs ผู้ร้าย 👿 สู้กันตาม event จริง (strike/recoil/idle) พร้อม damage numbers + battle cry + shockwave + sparks |
-| 1 | `#status` | สถานะ Worker | จำนวนโมเดล, recent activity, worker state |
-| — | (inline) | 🎒 **School Roster** | 4 buckets: นักเรียนใหม่ย้ายมา (≤24h) · โดดเรียน (2-48h) · ลาออก (48h-7d) · โดนไล่ออก (>7d) |
-| 2 | `#providers` | Providers | grid แสดง provider ทั้งหมด พร้อมสถานะ |
-| 3 | `#rankings` | อันดับนักเรียน | top models เรียงตามคะแนน |
-| 4 | `#chat` | Chat Panel | ทดลองคุยกับโมเดลโดยตรง |
-| 5 | `#smart-routing` | จัดห้องเรียนอัตโนมัติ | routing stats แยกตาม category |
-| 6 | `#trend` | พัฒนาการนักเรียน | 3 กราฟ: heatmap + leaderboard + stacked area |
-| 7 | `#uptime` | Uptime | % uptime + cooldown counts ต่อ provider |
-| 8 | `#cost-opt` | Cost Optimizer | token budget + forecast |
-| 9 | `#school-bell` | หลังเรียน 🛎️ | event stream แบบ real-time |
-| 10 | `#complaints` | ใบเตือน | issues + failed exams |
-| 11 | `#gateway-logs` | สมุดจดงาน | request/response audit trail |
-| 12 | `#logs` | Logs | worker activity log |
-
-### ⚔️ Battle Theater — how it reacts
-
-ข้อมูลจาก `/api/gateway-logs` (poll ทุก 5s) → แปลงเป็นฉากตามผลจริง:
-
-| เวลาตอบ / สถานะ | Scene | พระเอก 🦸 | ผู้ร้าย 👿 | Effect |
-|---|---|---|---|---|
-| ≤ 1.5s | `epic` | Strike lunge +150px | Recoil -60px | 💥 **CRITICAL! -99!** + shockwave + 12 sparks + speed lines (สีเขียว) |
-| ≤ 4s | `win` | Strike lunge | Recoil | ⚔️ **STRIKE! -40** + shockwave + sparks (สีเขียว) |
-| 4-10s | `thinking` | Idle breathing | Idle breathing | — |
-| > 10s | `slow` | Idle breathing | Idle breathing | — |
-| error/5xx | `fail` | Recoil -60px | Strike lunge -150px | 💢 **IMPACT! -55** + shockwave + sparks (**สีแดง**) |
-
-Assets: [public/hero.svg](public/hero.svg) (นักรบไทย/Neo hybrid, ดาบเรืองแสงเขียว), [public/villain.svg](public/villain.svg) (hooded cyberpunk, ไม้เท้าคริสตัลแดง)
-
----
-
-## API Endpoints
-
-### OpenAI-Compatible Proxy (ใช้แทน OpenAI ได้เลย)
-
-ตั้ง `base_url = http://localhost:3334/v1` แล้วใช้ SDK ของ OpenAI ได้ทันที
-
-| Method | Route | คำอธิบาย |
-|--------|-------|----------|
-| POST | `/v1/chat/completions` | **หลัก** — smart routing เลือกโมเดลให้อัตโนมัติ |
-| GET | `/v1/models` | list โมเดลที่ค้นพบทั้งหมด |
-| GET | `/v1/models/[model]` | detail ของโมเดลเดียว |
-| POST | `/v1/embeddings` | text embeddings |
-| POST | `/v1/completions` | legacy text completion |
-| POST | `/v1/images/generations` | สร้างภาพ |
-| POST | `/v1/audio/speech` | TTS |
-| POST | `/v1/audio/transcriptions` | STT |
-| POST | `/v1/audio/translations` | แปลเสียง |
-| POST | `/v1/moderations` | content moderation |
-
-### Admin / Status APIs
-
-| Route | คำอธิบาย |
+| Model | Behavior |
 |-------|----------|
-| `GET /api/health` | health check รวม: db + providers + worker + gateway success rate |
-| `GET /api/status` | worker state + model counts + recent logs |
-| `GET /api/providers` | provider config + key status + model counts |
-| `GET /api/models?provider=X` | list โมเดล (filter ตาม provider ได้) |
-| `GET /api/gateway-logs?limit=100&offset=0` | request/response audit trail |
-| `POST /api/chat` | direct chat test `{modelId, provider, messages}` |
-| `GET /api/leaderboard` | top models by score |
-| `GET /api/trend` | benchmark/complaint/latency trends 14 วัน |
-| `GET /api/uptime` | per-provider uptime % + cooldown |
-| `GET /api/cost-optimizer` | token budget + estimated cost |
-| `GET /api/cost-savings` | cumulative cost by provider |
-| `GET /api/analytics` | aggregate stats |
-| `POST /api/complaint` | file complaint `{modelId, category, reason, messages}` |
-| `GET /api/events` | real-time event stream (SSE) |
-| `GET /api/routing-stats` | per-model performance by category |
-| `POST /api/budget` | set token budget |
-| `GET /api/worker` | trigger หรือ check worker cycle |
-| `GET /api/setup` | onboarding |
+| `bcproxy/auto` | Best by benchmark score |
+| `bcproxy/fast` | Lowest latency |
+| `bcproxy/tools` | Best tool-calling support |
+| `bcproxy/thai` | Best Thai language performance |
+| `bcproxy/consensus` | Query 3 models, pick longest answer |
 
-### ตัวอย่างใช้งาน (Python)
+### Rate limiting
+
+`POST /v1/chat/completions` is limited to 100 requests per 60 seconds per IP, enforced via Redis sliding window. Degrades gracefully if Redis is unavailable.
+
+### Example
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="http://localhost:3334/v1",
-    api_key="sk-anything",  # ไม่ต้องใช้ key จริง
-)
-
+client = OpenAI(base_url="http://localhost:3334/v1", api_key="dummy")
 resp = client.chat.completions.create(
-    model="auto",  # ให้ smart routing เลือกให้
+    model="bcproxy/auto",
     messages=[{"role": "user", "content": "สวัสดี"}],
 )
 print(resp.choices[0].message.content)
 ```
 
-### ตัวอย่างใช้งาน (curl)
+## Management API
 
-```bash
-curl http://localhost:3334/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "auto",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
-```
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/health` | Health check (DB + Redis + worker) |
+| `GET /api/status` | System overview |
+| `GET /api/models` | Models with health/benchmark data |
+| `GET /api/providers` | Provider list and status |
+| `GET /api/leaderboard` | Model benchmark rankings |
+| `GET /api/analytics` | Usage analytics |
+| `GET /api/trend` | Score/latency trends (14 days) |
+| `GET /api/uptime` | Model uptime statistics |
+| `GET /api/gateway-logs` | Request audit trail |
+| `GET /api/routing-stats` | Per-category routing performance |
+| `GET /api/cost-optimizer` | Cost optimization data |
+| `GET /api/cost-savings` | Cost savings report |
+| `GET/POST /api/budget` | Daily token budget |
+| `GET/POST /api/setup` | Provider API key management |
+| `POST /api/complaint` | Submit quality complaint |
+| `GET /api/events` | Real-time SSE event stream |
+| `GET/POST /api/worker` | Worker status and manual trigger |
 
----
+## Background worker
 
-## Background Worker
+Runs automatically on startup (via `node-cron`, hourly):
 
-[src/lib/worker/](src/lib/worker/) — รันอัตโนมัติทุก 1 ชั่วโมง
+1. **Scan** — discover new free models from all configured providers
+2. **Health check** — ping each model, set cooldown on failure
+3. **Benchmark** — score models on Thai/English questions using a judge model
+4. **Auto-complaint** — detect bad responses and schedule retest
 
-หน้าที่:
-1. **Scan** — ค้นหาโมเดลใหม่จากทุก provider ที่ตั้ง API key
-2. **Health Check** — ping แต่ละโมเดล, ถ้า fail → cooldown 15 นาที
-3. **Benchmark** — (option) สอบโมเดลด้วยข้อสอบมาตรฐาน → ให้คะแนน
-4. **Auto-complaint** — วิเคราะห์คำตอบแย่ → record + retest
+## Database schema (14 tables)
 
-State persisted ใน table `worker_state`, log ใน `worker_logs`
+`models`, `health_logs`, `benchmark_results`, `gateway_logs`, `complaints`, `complaint_exams`, `routing_stats`, `events`, `token_usage`, `worker_state`, `worker_logs`, `cooldowns`, `api_keys`, `routing_decisions`
 
----
-
-## Database Schema
-
-SQLite ที่ `/app/data/bcproxyai.db` (Docker) หรือ `./data/bcproxyai.db` (local)
-
-Schema: [src/lib/db/schema.ts](src/lib/db/schema.ts) — 14 tables หลัก:
-
-| Table | คำอธิบาย |
-|-------|----------|
-| `models` | โมเดลที่ค้นพบ + capabilities |
-| `health_logs` | health/latency/cooldown ต่อ provider |
-| `benchmark_results` | ผลสอบ benchmark |
-| `gateway_logs` | request/response audit trail |
-| `complaints` | issues ที่ user/AI report |
-| `complaint_exams` | ผล retest หลังร้องเรียน |
-| `routing_stats` | performance per model per category |
-| `events` | real-time notifications (school bell) |
-| `token_usage` | cost tracking |
-| `worker_state` | worker checkpoint |
-| `worker_logs` | worker activity log |
-| `cooldowns` | provider cooldown table |
-| `api_keys` | encrypted key store |
-| `routing_decisions` | smart routing decision log |
-
----
-
-## Caddy Reverse Proxy
-
-ไฟล์: [Caddyfile](Caddyfile)
-
-```caddy
-{
-    admin off
-    auto_https off
-}
-
-:3333 {
-    reverse_proxy 127.0.0.1:3334 {
-        flush_interval -1
-        transport http {
-            read_timeout 300s
-            write_timeout 300s
-        }
-    }
-}
-
-:18790 {
-    reverse_proxy 127.0.0.1:18791 {
-        flush_interval -1
-        transport http {
-            read_timeout 600s
-            write_timeout 600s
-        }
-    }
-}
-```
-
-| Port | ใช้ทำอะไร |
-|------|------------|
-| `3333` | BCProxyAI ผ่าน Caddy (timeout 300s) |
-| `3334` | BCProxyAI direct (Docker port) |
-| `18790` | OpenClaw gateway ผ่าน Caddy (timeout 600s) |
-| `18791` | OpenClaw direct (Docker port) |
-
-รัน Caddy บน Windows:
-```powershell
-caddy run --config Caddyfile
-```
-
----
-
-## OpenClaw Integration
-
-BCProxyAI เป็น **unified model gateway** สำหรับ OpenClaw agent framework
-
-### ตั้งค่าใน OpenClaw
-
-```bash
-docker exec <openclaw-container> openclaw onboard
-```
-
-หรือแก้ `~/.openclaw/openclaw.json` ตรงๆ:
-
-```json
-{
-  "models": {
-    "providers": {
-      "bcproxy-local": {
-        "baseUrl": "http://host.docker.internal:3334/v1",
-        "apiKey": "dummy",
-        "api": "openai-completions",
-        "models": [{
-          "id": "auto",
-          "name": "BCProxyAI Auto",
-          "contextWindow": 131072,
-          "maxTokens": 8192
-        }]
-      }
-    }
-  }
-}
-```
-
-### Device Pairing
-
-OpenClaw control UI ต้อง pair device ก่อนใช้งาน:
-
-```bash
-docker exec <openclaw-container> openclaw devices list
-docker exec <openclaw-container> openclaw devices approve <requestId>
-```
-
-หรือเข้าจาก localhost จะ auto-approve
-
-### LAN HTTP-only mode
-
-ถ้าจะให้คนอื่นใน LAN เข้าถึง OpenClaw control UI ผ่าน HTTP (ไม่ใช่ HTTPS):
-
-```bash
-docker exec <openclaw-container> openclaw config set gateway.controlUi.dangerouslyDisableDeviceAuth true
-docker restart <openclaw-container>
-```
-
-⚠️ ใช้เฉพาะใน LAN ที่เชื่อใจได้ อย่าเปิดออก internet
-
----
-
-## Project Structure
-
-```
-.
-├── src/
-│   ├── app/
-│   │   ├── page.tsx              # Dashboard หลัก
-│   │   ├── layout.tsx
-│   │   ├── globals.css           # animations + glass effects
-│   │   ├── api/                  # 18+ admin API routes
-│   │   │   ├── health/
-│   │   │   ├── status/
-│   │   │   ├── providers/
-│   │   │   ├── models/
-│   │   │   ├── gateway-logs/
-│   │   │   ├── chat/
-│   │   │   ├── leaderboard/
-│   │   │   ├── trend/
-│   │   │   ├── uptime/
-│   │   │   ├── cost-optimizer/
-│   │   │   ├── complaint/
-│   │   │   ├── events/
-│   │   │   ├── routing-stats/
-│   │   │   └── ...
-│   │   └── v1/                   # OpenAI-compatible proxy
-│   │       ├── chat/completions/
-│   │       ├── models/
-│   │       ├── embeddings/
-│   │       └── ...
-│   ├── components/
-│   │   ├── MascotScene.tsx       # 🦐🦞 live theater
-│   │   ├── TrendPanel.tsx        # heatmap + leaderboard + stacked area
-│   │   ├── GuideModal.tsx        # OpenClaw onboarding guide
-│   │   ├── SetupModal.tsx        # API key setup
-│   │   └── shared.ts
-│   └── lib/
-│       ├── db/schema.ts          # SQLite schema (14 tables)
-│       ├── worker/               # background scanner/health/benchmark
-│       ├── providers.ts          # provider URLs + config
-│       ├── api-keys.ts
-│       ├── openai-compat.ts
-│       ├── routing-learn.ts      # smart routing logic
-│       ├── auto-complaint.ts
-│       └── cache.ts
-├── Caddyfile                     # reverse proxy config
-├── docker-compose.yml
-├── Dockerfile                    # multi-stage Node 20 alpine
-├── .env.example
-├── package.json
-└── README.md
-```
-
----
+Schema is created automatically on first startup via `runMigrations()`.
 
 ## Testing
 
 ```bash
-npm test              # run all vitest tests
-npm test:watch        # watch mode
-npm test:coverage     # coverage report
+npm test              # vitest
+npm run test:watch    # watch mode
 ```
 
-Tests อยู่ที่:
-- [src/lib/worker/__tests__/](src/lib/worker/__tests__/) — worker logic
-- [src/lib/__tests__/](src/lib/__tests__/) — utilities
+Tests: `src/lib/worker/__tests__/`
 
----
+## Dashboard
 
-## License
+The web UI at `/` includes live sections: system status, provider grid, model leaderboard, chat panel, smart routing stats, trend charts, uptime tracker, cost optimizer, real-time event stream, complaints panel, gateway logs, and a Battle Theater animation driven by real request outcomes.
 
-MIT
+## Caddy reload (external)
 
----
+If using the host-side Caddyfile (not the in-compose one):
 
-🦐 _Made with น้องกุ้ง + 🦞 OpenClaw_
+```powershell
+powershell -File "C:/Users/jatur/restart-caddy.ps1"
+```
