@@ -47,7 +47,9 @@ interface InfraData {
     topClients: Array<{ ip: string; count: number }>;
   };
   cooldowns: {
-    count: number;
+    providerCount: number;
+    modelCount: number;
+    totalModels: number;
     providers: Array<{ provider: string; reason: string; ttlSec: number }>;
   };
   failureStreaks: Array<{ provider: string; count: number }>;
@@ -259,17 +261,38 @@ function RateLimitCard({ d }: { d: InfraData["rateLimit"] }) {
 
 // ── Cooldowns table ───────────────────────────────────────────────────────────
 function CooldownsCard({ d }: { d: InfraData["cooldowns"] }) {
+  const modelPct =
+    d.totalModels > 0 ? Math.round((d.modelCount / d.totalModels) * 100) : 0;
   return (
     <CardShell accent="indigo">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-lg">⚡</span>
-        <span className="font-bold text-white text-sm">Provider Cooldowns</span>
-        {d.count > 0 && (
-          <span className="text-xs text-amber-400 font-bold ml-auto">{d.count} active</span>
-        )}
+      <div className="flex items-start justify-between gap-2 mb-1">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">⚡</span>
+          <span className="font-bold text-white text-sm">Cooldowns</span>
+        </div>
+        <div className="flex items-center gap-3 text-[10px] text-gray-400">
+          <span>
+            <span className="text-amber-300 font-bold">{d.providerCount}</span> providers
+          </span>
+          <span className="text-gray-600">·</span>
+          <span>
+            <span className="text-amber-300 font-bold">{d.modelCount}</span>
+            <span className="text-gray-600">/{d.totalModels}</span> models
+            {d.totalModels > 0 && (
+              <span className="text-gray-600"> ({modelPct}%)</span>
+            )}
+          </span>
+        </div>
       </div>
-      {d.count === 0 ? (
-        <div className="text-sm text-emerald-400 py-2">ทุก provider พร้อมใช้งาน 🎉</div>
+      {d.providerCount === 0 ? (
+        <div className="text-sm text-emerald-400 py-2">
+          ทุก provider พร้อมใช้งาน 🎉
+          {d.modelCount > 0 && (
+            <div className="text-[10px] text-gray-500 mt-0.5">
+              มี {d.modelCount} model ระดับ model-cooldown แต่ provider ทั้งหมดยังใช้ได้
+            </div>
+          )}
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -436,7 +459,7 @@ export function InfraPanel() {
 
   // ── Overall health badge ──────────────────────────────────────────────────
   const systemOk = data.postgres.ok && data.redis.ok;
-  const hasCooldowns = data.cooldowns.count > 0;
+  const hasCooldowns = data.cooldowns.providerCount > 0;
 
   let healthBadge: { icon: string; label: string; cls: string };
   if (!systemOk) {

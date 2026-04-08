@@ -158,7 +158,9 @@ export async function GET() {
 
   // ── Cooldowns ─────────────────────────────────────────────────────────────────
   let cooldowns = {
-    count: 0,
+    providerCount: 0,
+    modelCount: 0,
+    totalModels: 0,
     providers: [] as Array<{ provider: string; reason: string; ttlSec: number }>,
   };
   try {
@@ -181,8 +183,27 @@ export async function GET() {
         }
         providers.push({ provider, reason, ttlSec: ttls[i] ?? 0 });
       }
-      cooldowns = { count: providers.length, providers };
+      cooldowns.providers = providers;
+      cooldowns.providerCount = providers.length;
     }
+  } catch {
+    // silent
+  }
+
+  // Model-level cooldown count (from Postgres health_logs — distinct from provider-level)
+  try {
+    const sql = getSqlClient();
+    const modelRows = await sql<{ total: number; down: number }[]>`
+      SELECT
+        (SELECT COUNT(*)::int FROM models)                                           AS total,
+        (SELECT COUNT(DISTINCT h.model_id)::int
+         FROM health_logs h
+         INNER JOIN (SELECT model_id, MAX(id) AS max_id FROM health_logs GROUP BY model_id) l
+           ON h.model_id = l.model_id AND h.id = l.max_id
+         WHERE h.cooldown_until > now())                                             AS down
+    `;
+    cooldowns.totalModels = Number(modelRows[0]?.total ?? 0);
+    cooldowns.modelCount = Number(modelRows[0]?.down ?? 0);
   } catch {
     // silent
   }
