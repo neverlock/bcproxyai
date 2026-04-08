@@ -680,6 +680,32 @@ async function forwardToProvider(
   return response;
 }
 
+// Improvement F: probe Ollama /api/ps to see if model is loaded in memory
+async function isOllamaModelLoaded(modelId: string): Promise<boolean> {
+  try {
+    const redis = getRedis();
+    const cacheKey = `ollama:loaded:${modelId}`;
+    const cached = await redis.get(cacheKey);
+    if (cached === "1") return true;
+    if (cached === "0") return false;
+
+    const baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+    const res = await fetch(`${baseUrl}/api/ps`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!res.ok) {
+      await redis.set(cacheKey, "0", "EX", 30);
+      return false;
+    }
+    const data = await res.json() as { models?: Array<{ model: string }> };
+    const loaded = data.models?.some(m => m.model === modelId || m.model.startsWith(modelId)) ?? false;
+    await redis.set(cacheKey, loaded ? "1" : "0", "EX", 30);
+    return loaded;
+  } catch {
+    return false; // probe failed → skip to be safe
+  }
+}
+
 function isRetryableStatus(status: number): boolean {
   return status === 413 || status === 429 || status === 410 || status >= 500;
 }
@@ -977,6 +1003,18 @@ export async function POST(req: NextRequest) {
       triedProviders.add(provider);
       // Record attempt for sample-size guard (regardless of outcome)
       recordProviderAttempt(provider).catch(() => { /* non-critical */ });
+
+      // Improvement F: skip cold Ollama when cloud alternatives exist
+      if (provider === "ollama") {
+        const hasCloudAlternative = spreadCandidates.slice(i + 1).some(c => c.provider !== "ollama");
+        if (hasCloudAlternative) {
+          const loaded = await isOllamaModelLoaded(actualModelId);
+          if (!loaded) {
+            console.log(`[OLLAMA-SKIP] ${actualModelId} not loaded in memory — skipping (cloud alternatives available)`);
+            continue;
+          }
+        }
+      }
 
       // Check if this attempt is a half-open probe
       let wasProbing = false;
